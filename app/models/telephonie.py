@@ -21,9 +21,10 @@ class SiteGSM(Base):
     __tablename__ = "sites_gsm"
 
     id           = Column(Integer, primary_key=True, index=True)
+    code_site    = Column(String(50),  nullable=True, index=True)
+    imsi         = Column(String(20),  nullable=True)
     nom          = Column(String(200), nullable=False)
     localisation = Column(String(300), nullable=True)
-    description  = Column(Text, nullable=True)
     created_at   = Column(DateTime(timezone=True), server_default=func.now())
 
     affectations = relationship("AffectationSIM", back_populates="site")
@@ -47,6 +48,7 @@ class NumeroSIM(Base):
 
     id          = Column(Integer, primary_key=True, index=True)
     numero      = Column(String(20), unique=True, nullable=False, index=True)
+    imsi        = Column(String(20), nullable=True)
     categorie   = Column(Enum(CategorieSimEnum), nullable=False, index=True)
     statut      = Column(Enum(StatutSimEnum), default=StatutSimEnum.ACTIVE, index=True)
     operateur   = Column(String(50), nullable=True)
@@ -54,8 +56,22 @@ class NumeroSIM(Base):
     created_at  = Column(DateTime(timezone=True), server_default=func.now())
     updated_at  = Column(DateTime(timezone=True), onupdate=func.now())
 
-    affectations    = relationship("AffectationSIM", back_populates="sim", order_by="AffectationSIM.date_debut.desc()")
-    lignes_facture  = relationship("LigneFacture", back_populates="sim")
+    affectations      = relationship(
+        "AffectationSIM",
+        back_populates="sim",
+        order_by="AffectationSIM.date_debut.desc()",
+        foreign_keys="[AffectationSIM.sim_id]",
+        overlaps="affectation_active",
+    )
+    affectation_active = relationship(
+        "AffectationSIM",
+        primaryjoin="and_(NumeroSIM.id == AffectationSIM.sim_id, AffectationSIM.is_active == True)",
+        foreign_keys="[AffectationSIM.sim_id]",
+        uselist=False,
+        viewonly=True,
+        overlaps="affectations",
+    )
+    lignes_facture    = relationship("LigneFacture", back_populates="sim")
 
 
 class AffectationSIM(Base):
@@ -74,9 +90,10 @@ class AffectationSIM(Base):
     site_id             = Column(Integer, ForeignKey("sites_gsm.id"), nullable=True)
     vehicule_id         = Column(Integer, ForeignKey("vehicules.id"), nullable=True)
 
+    motif_fin  = Column(String(300), nullable=True)
     notes      = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    sim      = relationship("NumeroSIM", back_populates="affectations")
-    site     = relationship("SiteGSM", back_populates="affectations")
-    vehicule = relationship("Vehicule", back_populates="affectations")
+    sim      = relationship("NumeroSIM", back_populates="affectations", overlaps="affectation_active")
+    site     = relationship("SiteGSM",   back_populates="affectations")
+    vehicule = relationship("Vehicule",  back_populates="affectations")
