@@ -1,0 +1,46 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: parc_it
+      POSTGRES_USER: parc_user
+      POSTGRES_PASSWORD: C@musatPass2025
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U parc_user -d parc_it"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build: .
+    command: >
+      sh -c "python prestart.py &&
+      gunicorn app.main:app
+      --worker-class uvicorn.workers.UvicornWorker
+      --bind 0.0.0.0:8040
+      --workers 3
+      --timeout 120
+      --graceful-timeout 30
+      --keep-alive 5
+      --access-logfile -
+      --log-level info"
+    volumes:
+      - .:/app
+    ports:
+      - "8040:8040"
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pgdata:
