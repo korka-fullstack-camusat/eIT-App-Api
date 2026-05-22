@@ -202,22 +202,28 @@ def historique_sim(sim_id: int, db: Session = Depends(get_db)):
 
 # ── Sites GSM ─────────────────────────────────────────────────────────────────
 
-@router.get("/sites", response_model=list[SiteGSMOut])
-def list_sites(db: Session = Depends(get_db)):
+def _site_sim_map(db: Session) -> dict:
+    """Retourne un dict {site_id: sim_numero} pour toutes les affectations actives."""
     rows = (
-        db.query(SiteGSM, NumeroSIM.numero)
-        .outerjoin(AffectationSIM, and_(
-            AffectationSIM.site_id == SiteGSM.id,
+        db.query(AffectationSIM.site_id, NumeroSIM.numero)
+        .join(NumeroSIM, NumeroSIM.id == AffectationSIM.sim_id)
+        .filter(
             AffectationSIM.is_active == True,
-        ))
-        .outerjoin(NumeroSIM, NumeroSIM.id == AffectationSIM.sim_id)
-        .order_by(SiteGSM.nom)
+            AffectationSIM.site_id.isnot(None),
+        )
         .all()
     )
-    result = []
-    for site, sim_numero in rows:
-        item = SiteGSMOut.model_validate(site)
-        item.sim_numero = sim_numero
+    return {r.site_id: r.numero for r in rows}
+
+
+@router.get("/sites", response_model=list[SiteGSMOut])
+def list_sites(db: Session = Depends(get_db)):
+    sites   = db.query(SiteGSM).order_by(SiteGSM.nom).all()
+    sim_map = _site_sim_map(db)
+    result  = []
+    for s in sites:
+        item = SiteGSMOut.model_validate(s)
+        item.sim_numero = sim_map.get(s.id)
         result.append(item)
     return result
 
@@ -231,24 +237,16 @@ def create_site(data: SiteGSMCreate, db: Session = Depends(get_db)):
 
 @router.get("/sites/export")
 def export_sites(db: Session = Depends(get_db)):
-    rows_db = (
-        db.query(SiteGSM, NumeroSIM.numero)
-        .outerjoin(AffectationSIM, and_(
-            AffectationSIM.site_id == SiteGSM.id,
-            AffectationSIM.is_active == True,
-        ))
-        .outerjoin(NumeroSIM, NumeroSIM.id == AffectationSIM.sim_id)
-        .order_by(SiteGSM.nom)
-        .all()
-    )
+    sites   = db.query(SiteGSM).order_by(SiteGSM.nom).all()
+    sim_map = _site_sim_map(db)
     rows = [["SiteID", "IMSI", "Nom du site", "Localisation", "Numero SIM"]]
-    for site, sim_numero in rows_db:
+    for s in sites:
         rows.append([
-            site.code_site    or "",
-            site.imsi         or "",
-            site.nom,
-            site.localisation or "",
-            sim_numero        or "",
+            s.code_site    or "",
+            s.imsi         or "",
+            s.nom,
+            s.localisation or "",
+            sim_map.get(s.id) or "",
         ])
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";")
@@ -324,9 +322,98 @@ def delete_site(site_id: int, db: Session = Depends(get_db)):
 
 # ── Véhicules ─────────────────────────────────────────────────────────────────
 
+def _vehicule_sim_map(db: Session) -> dict:
+    """Retourne un dict {vehicule_id: sim_numero} pour toutes les affectations actives."""
+    rows = (
+        db.query(AffectationSIM.vehicule_id, NumeroSIM.numero)
+        .join(NumeroSIM, NumeroSIM.id == AffectationSIM.sim_id)
+        .filter(
+            AffectationSIM.is_active == True,
+            AffectationSIM.vehicule_id.isnot(None),
+        )
+        .all()
+    )
+    return {r.vehicule_id: r.numero for r in rows}
+
+
 @router.get("/vehicules", response_model=list[VehiculeOut])
 def list_vehicules(db: Session = Depends(get_db)):
-    return db.query(Vehicule).order_by(Vehicule.immatriculation).all()
+    vehicules = db.query(Vehicule).order_by(Vehicule.immatriculation).all()
+    sim_map   = _vehicule_sim_map(db)
+    result = []
+    for v in vehicules:
+        item = VehiculeOut.model_validate(v)
+        item.sim_numero = sim_map.get(v.id)
+        result.append(item)
+    return result
+
+
+@router.get("/vehicules/export")
+def export_vehicules(db: Session = Depends(get_db)):
+    vehicules = db.query(Vehicule).order_by(Vehicule.immatriculation).all()
+    sim_map   = _vehicule_sim_map(db)
+    rows = [["Immatriculation", "Marque", "Modèle", "Affectation", "Numéro SIM"]]
+    for v in vehicules:
+        rows.append([
+            v.immatriculation,
+            v.marque      or "",
+            v.modele      or "",
+            v.affectation or "",
+            sim_map.get(v.id) or "",
+        ])
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=";")
+    writer.writerows(rows)
+    content = chr(0xFEFF) + output.getvalue()
+    return StreamingResponse(
+        io.BytesIO(content.encode("utf-8")),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=vehicules.csv"},
+    )
+
+
+@router.post("/vehicules/import")
+async def import_vehicules(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    content = await file.read()
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = content.decode("latin-1")
+
+    def norm(s: str) -> str:
+        import unicodedata
+        s = unicodedata.normalize("NFD", s)
+        s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+        return s.strip().upper().replace(" ", "_").replace("/", "_")
+
+    reader = csv.DictReader(io.StringIO(text), delimiter=";")
+    created, updated, errors = 0, 0, []
+
+    for i, raw_row in enumerate(reader, start=2):
+        row = {norm(k): (v.strip() if v else "") for k, v in raw_row.items()}
+
+        immat = row.get("IMMATRICULATION", "").strip()
+        if not immat:
+            errors.append({"ligne": i, "message": "Immatriculation manquante"}); continue
+
+        marque      = row.get("MARQUE",      "") or None
+        modele      = row.get("MODELE",      row.get("MODELE_", "")) or None
+        affectation = row.get("AFFECTATION", "") or None
+
+        existing = db.query(Vehicule).filter(Vehicule.immatriculation == immat).first()
+        if existing:
+            if marque:      existing.marque      = marque
+            if modele:      existing.modele      = modele
+            if affectation: existing.affectation = affectation
+            updated += 1
+        else:
+            db.add(Vehicule(immatriculation=immat, marque=marque,
+                            modele=modele, affectation=affectation))
+            created += 1
+
+    db.commit()
+    return {"created": created, "updated": updated, "errors": errors,
+            "total_lignes": created + updated + len(errors)}
 
 
 @router.post("/vehicules", response_model=VehiculeOut, status_code=201)

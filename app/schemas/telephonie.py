@@ -27,8 +27,9 @@ class VehiculeCreate(BaseModel):
 
 
 class VehiculeOut(VehiculeCreate):
-    id:         int
-    created_at: datetime
+    id:          int
+    created_at:  datetime
+    sim_numero:  Optional[str] = None
     class Config:
         from_attributes = True
 
