@@ -12,9 +12,11 @@ class CategorieSimEnum(str, enum.Enum):
 
 
 class StatutSimEnum(str, enum.Enum):
-    ACTIVE      = "ACTIVE"
-    INACTIVE    = "INACTIVE"
-    SUSPENDUE   = "SUSPENDUE"
+    ACTIVE    = "ACTIVE"
+    INACTIVE  = "INACTIVE"
+    SUSPENDUE = "SUSPENDUE"
+    RESILIE   = "RESILIE"
+    CEDE      = "CEDE"
 
 
 class SiteGSM(Base):

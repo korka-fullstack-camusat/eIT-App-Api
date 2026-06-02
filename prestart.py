@@ -31,12 +31,18 @@ print("→ Application des migrations...")
 with engine.connect() as conn:
     migrations = [
         "ALTER TABLE materiels ADD COLUMN IF NOT EXISTS adresse_ip VARCHAR(50)",
+        "ALTER TABLE materiels RENAME COLUMN adresse_ip TO adresse_mac",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255)",
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_email ON users(email) WHERE email IS NOT NULL",
         "ALTER TABLE affectations_sim ADD COLUMN IF NOT EXISTS motif_fin VARCHAR(300)",
         "ALTER TABLE sites_gsm ADD COLUMN IF NOT EXISTS code_site VARCHAR(50)",
         "ALTER TABLE sites_gsm ADD COLUMN IF NOT EXISTS imsi VARCHAR(20)",
         "ALTER TABLE numeros_sim ADD COLUMN IF NOT EXISTS imsi VARCHAR(20)",
+        # Ajout de la valeur EN_PANNE dans le type enum PostgreSQL
+        "ALTER TYPE statutmateriel ADD VALUE IF NOT EXISTS 'EN_PANNE'",
+        # Nouveaux statuts SIM
+        "ALTER TYPE statutsimenum ADD VALUE IF NOT EXISTS 'RESILIE'",
+        "ALTER TYPE statutsimenum ADD VALUE IF NOT EXISTS 'CEDE'",
     ]
     for sql in migrations:
         try:

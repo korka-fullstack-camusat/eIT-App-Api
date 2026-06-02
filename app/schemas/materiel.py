@@ -9,7 +9,7 @@ class MaterielBase(BaseModel):
     marque:           str
     modele:           Optional[str] = ""
     numero_serie:     Optional[str] = None
-    adresse_ip:       Optional[str] = None
+    adresse_mac:      Optional[str] = None
     numero_bon_cmd:   Optional[str] = None
     etat:             EtatMateriel = EtatMateriel.BON
     date_acquisition: Optional[date] = None
@@ -25,6 +25,7 @@ class MaterielUpdate(BaseModel):
     marque:           Optional[str] = None
     modele:           Optional[str] = None
     numero_serie:     Optional[str] = None
+    adresse_mac:      Optional[str] = None
     numero_bon_cmd:   Optional[str] = None
     etat:             Optional[EtatMateriel] = None
     statut:           Optional[StatutMateriel] = None
@@ -47,7 +48,7 @@ class MaterielOut(MaterielBase):
     id:                 int
     statut:             StatutMateriel
     created_at:         datetime
-    adresse_ip:         Optional[str] = None
+    adresse_mac:        Optional[str] = None
     attribution_active: Optional[AttributionActiveInfo] = None
 
     class Config:

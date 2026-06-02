@@ -30,6 +30,7 @@ class StatutMateriel(str, enum.Enum):
     DISPONIBLE   = "DISPONIBLE"
     ATTRIBUE     = "ATTRIBUE"
     MAINTENANCE  = "MAINTENANCE"
+    EN_PANNE     = "EN_PANNE"
     REFORME      = "REFORME"
 
 
@@ -41,7 +42,7 @@ class Materiel(Base):
     marque          = Column(String(100), nullable=False)
     modele          = Column(String(150), nullable=True, default="")
     numero_serie    = Column(String(100), unique=True, nullable=True)
-    adresse_ip      = Column(String(50), nullable=True)
+    adresse_mac     = Column(String(50), nullable=True)
     numero_bon_cmd  = Column(String(100), nullable=True)
     etat            = Column(Enum(EtatMateriel), default=EtatMateriel.BON)
     statut          = Column(Enum(StatutMateriel), default=StatutMateriel.DISPONIBLE, index=True)

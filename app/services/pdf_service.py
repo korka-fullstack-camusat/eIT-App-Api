@@ -42,12 +42,8 @@ def _mat_description(m) -> str:
 
     # Identifiant le plus pertinent
     ident = None
-    if m.adresse_ip:
-        # Heuristique : si ça ressemble à une adresse MAC (contient ":")
-        if ":" in m.adresse_ip and len(m.adresse_ip) >= 17:
-            ident = f"Mac Address : {m.adresse_ip}"
-        else:
-            ident = f"Adresse IP : {m.adresse_ip}"
+    if m.adresse_mac:
+        ident = f"Adresse MAC : {m.adresse_mac}"
     if m.numero_serie:
         sn_label = "S/N"
         ident = f"{sn_label} : {m.numero_serie}" if not ident else f"{ident} — {sn_label} : {m.numero_serie}"

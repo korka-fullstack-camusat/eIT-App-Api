@@ -83,6 +83,101 @@ def export_sims(
     )
 
 
+@router.get("/sims/export-excel")
+def export_sims_excel(
+    categorie: Optional[CategorieSimEnum] = None,
+    statut:    Optional[StatutSimEnum]    = None,
+    search:    Optional[str]              = None,
+    cols:      Optional[str]              = None,
+    db: Session = Depends(get_db),
+):
+    """Export Excel stylisé des numéros SIM."""
+    import io
+    from datetime import datetime
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    q = db.query(NumeroSIM).options(joinedload(NumeroSIM.affectation_active))
+    if categorie: q = q.filter(NumeroSIM.categorie == categorie)
+    if statut:    q = q.filter(NumeroSIM.statut == statut)
+    if search:    q = q.filter(NumeroSIM.numero.ilike(f"%{search}%"))
+    sims = q.order_by(NumeroSIM.numero).all()
+
+    CAT_LABELS  = {"EMPLOYE": "Employé", "M2M_SITE": "M2M Site", "M2M_VEHICULE": "M2M Véhicule"}
+    STAT_LABELS = {"ACTIVE": "Active", "INACTIVE": "Inactive", "SUSPENDUE": "Suspendue",
+                   "RESILIE": "Résilié", "CEDE": "Cédé"}
+
+    ALL_COLS = [
+        ("numero",    "Numéro",          lambda s, a: s.numero or ""),
+        ("imsi",      "IMSI",            lambda s, a: s.imsi or ""),
+        ("categorie", "Catégorie",       lambda s, a: CAT_LABELS.get(s.categorie, s.categorie or "")),
+        ("operateur", "Opérateur",       lambda s, a: s.operateur or ""),
+        ("statut",    "Statut",          lambda s, a: STAT_LABELS.get(s.statut, s.statut or "")),
+        ("affecte",   "Affecté à",       lambda s, a: (a.employee_nom or (f"Site #{a.site_id}" if a.site_id else f"Véhicule #{a.vehicule_id}")) if a else ""),
+        ("matricule", "Matricule",       lambda s, a: a.employee_matricule or "" if a else ""),
+        ("date_aff",  "Date affectation",lambda s, a: a.date_debut.strftime("%d/%m/%Y") if a else ""),
+        ("desc",      "Description",     lambda s, a: s.description or ""),
+    ]
+    selected_keys = set(cols.split(",")) if cols else {c[0] for c in ALL_COLS}
+    columns = [(k, lbl, fn) for k, lbl, fn in ALL_COLS if k in selected_keys]
+
+    BLUE_HDR = "1B3D6F"; WHITE = "FFFFFF"; ROW_EVEN = "EEF4FF"; BORDER_COL = "C5D3E8"
+    thin = Side(style="thin", color=BORDER_COL)
+    border_all = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    wb = Workbook(); ws = wb.active; ws.title = "Numéros SIM"
+
+    # Titre
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
+    tc = ws.cell(row=1, column=1, value="INVENTAIRE DES NUMÉROS SIM")
+    tc.font = Font(name="Calibri", bold=True, size=14, color=WHITE)
+    tc.fill = PatternFill("solid", fgColor=BLUE_HDR)
+    tc.alignment = Alignment(horizontal="center", vertical="center"); ws.row_dimensions[1].height = 32
+
+    # Sous-titre
+    parts = [f"Exporté le {datetime.now().strftime('%d/%m/%Y')}", f"{len(sims)} numéro(s)"]
+    if statut:    parts.append(f"Statut : {STAT_LABELS.get(statut, statut)}")
+    if categorie: parts.append(f"Catégorie : {CAT_LABELS.get(categorie, categorie)}")
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(columns))
+    sc = ws.cell(row=2, column=1, value="  |  ".join(parts))
+    sc.font = Font(name="Calibri", italic=True, size=9, color="5B7DB1")
+    sc.fill = PatternFill("solid", fgColor="D9E6F7")
+    sc.alignment = Alignment(horizontal="left", vertical="center", indent=1); ws.row_dimensions[2].height = 18
+    ws.row_dimensions[3].height = 6
+
+    HDR_ROW = 4
+    for ci, (_, lbl, _fn) in enumerate(columns, start=1):
+        c = ws.cell(row=HDR_ROW, column=ci, value=lbl)
+        c.font = Font(name="Calibri", bold=True, size=10, color=WHITE)
+        c.fill = PatternFill("solid", fgColor=BLUE_HDR)
+        c.alignment = Alignment(horizontal="center", vertical="center"); c.border = border_all
+    ws.row_dimensions[HDR_ROW].height = 24; ws.freeze_panes = ws.cell(row=HDR_ROW + 1, column=1)
+
+    for ri, s in enumerate(sims):
+        row_num = HDR_ROW + 1 + ri
+        aff = s.affectation_active
+        row_fill = PatternFill("solid", fgColor=(ROW_EVEN if ri % 2 == 0 else WHITE))
+        for ci, (_, _lbl, fn) in enumerate(columns, start=1):
+            c = ws.cell(row=row_num, column=ci, value=fn(s, aff))
+            c.fill = row_fill; c.font = Font(name="Calibri", size=10)
+            c.alignment = Alignment(vertical="center", horizontal="left", indent=1); c.border = border_all
+        ws.row_dimensions[row_num].height = 18
+
+    for ci, (_, lbl, fn) in enumerate(columns, start=1):
+        max_len = max((len(str(fn(s, s.affectation_active))) for s in sims), default=0)
+        ws.column_dimensions[get_column_letter(ci)].width = max(len(lbl) + 2, min(max_len + 2, 40))
+
+    ws.oddFooter.center.text = "&\"Calibri\"&8 CAMUSAT — Numéros SIM  |  Page &P / &N"
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=numeros_sim.xlsx"},
+    )
+
+
 @router.post("/sims/import")
 async def import_sims(file: UploadFile = File(...), db: Session = Depends(get_db)):
     CAT_MAP = {
