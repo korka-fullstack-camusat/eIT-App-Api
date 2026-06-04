@@ -354,8 +354,139 @@ def export_sites(db: Session = Depends(get_db)):
     )
 
 
+@router.get("/sites/export-excel")
+def export_sites_excel(
+    filter_sim:  Optional[str]  = None,   # "affecte" | "non_affecte"
+    search:      Optional[str]  = None,
+    cols:        Optional[str]  = None,
+    date_debut:  Optional[date] = None,   # filtre sur created_at
+    date_fin:    Optional[date] = None,
+    db: Session = Depends(get_db),
+):
+    """Export Excel stylisé des sites GSM."""
+    import io
+    from datetime import datetime
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    sites   = db.query(SiteGSM).order_by(SiteGSM.nom).all()
+    sim_map = _site_sim_map(db)
+
+    # Enrichir avec sim_numero
+    class SiteRow:
+        def __init__(self, s):
+            self.id          = s.id
+            self.code_site   = s.code_site
+            self.imsi        = s.imsi
+            self.nom         = s.nom
+            self.localisation = s.localisation
+            self.created_at  = s.created_at
+            self.sim_numero  = sim_map.get(s.id)
+
+    rows_data = [SiteRow(s) for s in sites]
+
+    if filter_sim == "affecte":
+        rows_data = [r for r in rows_data if r.sim_numero]
+    elif filter_sim == "non_affecte":
+        rows_data = [r for r in rows_data if not r.sim_numero]
+    if date_debut:
+        rows_data = [r for r in rows_data if r.created_at and r.created_at.date() >= date_debut]
+    if date_fin:
+        rows_data = [r for r in rows_data if r.created_at and r.created_at.date() <= date_fin]
+    if search:
+        q = search.lower()
+        rows_data = [r for r in rows_data if
+            q in (r.nom or "").lower() or q in (r.code_site or "").lower() or
+            q in (r.imsi or "").lower() or q in (r.sim_numero or "").lower() or
+            q in (r.localisation or "").lower()]
+
+    ALL_COLS = [
+        ("code_site",    "SiteID",          lambda r: r.code_site or ""),
+        ("imsi",         "IMSI",            lambda r: r.imsi or ""),
+        ("nom",          "Nom du site",     lambda r: r.nom or ""),
+        ("localisation", "Localisation",    lambda r: r.localisation or ""),
+        ("sim_numero",   "Numéro SIM",      lambda r: r.sim_numero or ""),
+        ("statut_sim",   "Statut SIM",      lambda r: "Affecté" if r.sim_numero else "Non affecté"),
+        ("created_at",   "Date création",   lambda r: r.created_at.strftime("%d/%m/%Y") if r.created_at else ""),
+    ]
+    selected_keys = set(cols.split(",")) if cols else {c[0] for c in ALL_COLS}
+    columns = [(k, lbl, fn) for k, lbl, fn in ALL_COLS if k in selected_keys]
+
+    BLUE_HDR = "1B3D6F"; WHITE = "FFFFFF"; ROW_EVEN = "EEF4FF"; BORDER_COL = "C5D3E8"
+    thin = Side(style="thin", color=BORDER_COL)
+    border_all = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    wb = Workbook(); ws = wb.active; ws.title = "Sites GSM"
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
+    tc = ws.cell(row=1, column=1, value="INVENTAIRE DES SITES RMS")
+    tc.font = Font(name="Calibri", bold=True, size=14, color=WHITE)
+    tc.fill = PatternFill("solid", fgColor=BLUE_HDR)
+    tc.alignment = Alignment(horizontal="center", vertical="center"); ws.row_dimensions[1].height = 32
+
+    parts = [f"Exporté le {datetime.now().strftime('%d/%m/%Y')}"]
+    if date_debut: parts.append(f"Du {date_debut.strftime('%d/%m/%Y')}")
+    if date_fin:   parts.append(f"au {date_fin.strftime('%d/%m/%Y')}")
+    if filter_sim == "affecte":       parts.append("Avec SIM affecté")
+    elif filter_sim == "non_affecte": parts.append("Sans SIM affecté")
+    parts.append(f"{len(rows_data)} site(s)")
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(columns))
+    sc = ws.cell(row=2, column=1, value="  |  ".join(parts))
+    sc.font = Font(name="Calibri", italic=True, size=9, color="5B7DB1")
+    sc.fill = PatternFill("solid", fgColor="D9E6F7")
+    sc.alignment = Alignment(horizontal="left", vertical="center", indent=1); ws.row_dimensions[2].height = 18
+    ws.row_dimensions[3].height = 6
+
+    HDR_ROW = 4
+    for ci, (_, lbl, _fn) in enumerate(columns, start=1):
+        c = ws.cell(row=HDR_ROW, column=ci, value=lbl)
+        c.font = Font(name="Calibri", bold=True, size=10, color=WHITE)
+        c.fill = PatternFill("solid", fgColor=BLUE_HDR)
+        c.alignment = Alignment(horizontal="center", vertical="center"); c.border = border_all
+    ws.row_dimensions[HDR_ROW].height = 24; ws.freeze_panes = ws.cell(row=HDR_ROW + 1, column=1)
+
+    for ri, r in enumerate(rows_data):
+        row_num = HDR_ROW + 1 + ri
+        row_fill = PatternFill("solid", fgColor=(ROW_EVEN if ri % 2 == 0 else WHITE))
+        for ci, (_, _lbl, fn) in enumerate(columns, start=1):
+            c = ws.cell(row=row_num, column=ci, value=fn(r))
+            c.fill = row_fill; c.font = Font(name="Calibri", size=10)
+            c.alignment = Alignment(vertical="center", horizontal="left", indent=1); c.border = border_all
+        ws.row_dimensions[row_num].height = 18
+
+    for ci, (_, lbl, fn) in enumerate(columns, start=1):
+        max_len = max((len(fn(r)) for r in rows_data), default=0)
+        ws.column_dimensions[get_column_letter(ci)].width = max(len(lbl) + 2, min(max_len + 2, 40))
+
+    ws.oddFooter.center.text = "&\"Calibri\"&8 CAMUSAT — Sites RMS  |  Page &P / &N"
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+
+    fname = "sites_gsm"
+    if date_debut: fname += f"_du_{date_debut}"
+    if date_fin:   fname += f"_au_{date_fin}"
+    fname += ".xlsx"
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    )
+
+
 @router.post("/sites/import")
 async def import_sites(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Accepte deux formats de colonnes (séparateur ;) :
+    - Nouveau format CAMUSAT : Numéro ; IMSI ; SITES ID ; NOMS SITES
+    - Ancien format           : SiteID ; Nom du site ; Localisation ; Description
+
+    Si la colonne "Numéro" est présente et contient un numéro SIM existant,
+    une affectation est créée automatiquement entre ce SIM et le site.
+    """
+    import unicodedata as _ud
+    from datetime import date as _date
+
     content = await file.read()
     try:
         text = content.decode("utf-8-sig")
@@ -363,39 +494,102 @@ async def import_sites(file: UploadFile = File(...), db: Session = Depends(get_d
         text = content.decode("latin-1")
 
     def norm(s: str) -> str:
-        import unicodedata
-        s = unicodedata.normalize("NFD", s)
-        s = "".join(c for c in s if unicodedata.category(c) != "Mn")
-        return s.strip().upper().replace(" ", "_")
+        s = _ud.normalize("NFD", s)
+        s = "".join(c for c in s if _ud.category(c) != "Mn")
+        return s.strip().upper().replace(" ", "_").replace("'", "").replace("'", "")
 
-    reader = csv.DictReader(io.StringIO(text), delimiter=";")
-    created, updated, errors = 0, 0, []
+    # Détection automatique du séparateur
+    first_line = text.split("\n")[0]
+    sep = ";" if ";" in first_line else "\t"
+
+    reader = csv.DictReader(io.StringIO(text), delimiter=sep)
+    created, updated, affecte, errors = 0, 0, 0, []
 
     for i, raw_row in enumerate(reader, start=2):
         row = {norm(k): (v.strip() if v else "") for k, v in raw_row.items()}
 
-        nom = row.get("NOM_DU_SITE", row.get("NOM", "")).strip()
+        # ── Colonnes NOMS SITES / NOM_DU_SITE / NOM ──────────────────────────
+        nom = (
+            row.get("NOMS_SITES") or row.get("NOMS_SITE") or
+            row.get("NOM_SITES")  or row.get("NOM_DU_SITE") or
+            row.get("NOM")        or ""
+        ).strip()
         if not nom:
             errors.append({"ligne": i, "message": "Nom du site manquant"}); continue
 
-        code_site   = row.get("SITEID", row.get("CODE_SITE", "")) or None
-        localisation = row.get("LOCALISATION", "") or None
-        description  = row.get("DESCRIPTION", "") or None
+        # ── Colonnes SITES ID / SITEID / CODE_SITE ───────────────────────────
+        code_site = (
+            row.get("SITES_ID") or row.get("SITEID") or
+            row.get("SITE_ID")  or row.get("CODE_SITE") or ""
+        ) or None
 
-        existing = db.query(SiteGSM).filter(SiteGSM.nom == nom).first()
+        # ── IMSI ──────────────────────────────────────────────────────────────
+        imsi = row.get("IMSI", "") or None
+
+        # ── Numéro SIM (nouveau format) ───────────────────────────────────────
+        sim_numero = (
+            row.get("NUMERO") or row.get("NUM") or row.get("NUMEROS") or ""
+        ).strip() or None
+
+        # ── Localisation / Description (ancien format) ─────────────────────
+        localisation = row.get("LOCALISATION", "") or None
+        description  = row.get("DESCRIPTION", "")  or None
+
+        # ── Créer ou mettre à jour le site ────────────────────────────────────
+        existing = (
+            db.query(SiteGSM).filter(SiteGSM.code_site == code_site).first()
+            if code_site else None
+        ) or db.query(SiteGSM).filter(SiteGSM.nom == nom).first()
+
         if existing:
             if code_site:    existing.code_site    = code_site
+            if imsi:         existing.imsi         = imsi
             if localisation: existing.localisation = localisation
             if description:  existing.description  = description
+            site_obj = existing
             updated += 1
         else:
-            db.add(SiteGSM(nom=nom, code_site=code_site,
-                           localisation=localisation, description=description))
+            site_obj = SiteGSM(
+                nom=nom, code_site=code_site, imsi=imsi,
+                localisation=localisation, description=description,
+            )
+            db.add(site_obj)
+            db.flush()   # obtenir l'id sans commit
             created += 1
 
+        # ── Auto-affectation SIM ──────────────────────────────────────────────
+        if sim_numero:
+            sim_obj = db.query(NumeroSIM).filter(NumeroSIM.numero == sim_numero).first()
+            if sim_obj:
+                # Vérifier si une affectation active existe déjà pour ce site
+                existing_aff = db.query(AffectationSIM).filter(
+                    AffectationSIM.site_id == site_obj.id,
+                    AffectationSIM.is_active == True,
+                ).first()
+                if not existing_aff:
+                    # Désactiver toute affectation active de ce SIM
+                    old_aff = db.query(AffectationSIM).filter(
+                        AffectationSIM.sim_id == sim_obj.id,
+                        AffectationSIM.is_active == True,
+                    ).first()
+                    if old_aff:
+                        old_aff.is_active = False
+                        old_aff.date_fin  = _date.today()
+
+                    db.add(AffectationSIM(
+                        sim_id     = sim_obj.id,
+                        site_id    = site_obj.id,
+                        date_debut = _date.today(),
+                        is_active  = True,
+                    ))
+                    affecte += 1
+
     db.commit()
-    return {"created": created, "updated": updated, "errors": errors,
-            "total_lignes": created + updated + len(errors)}
+    return {
+        "created": created, "updated": updated,
+        "affecte": affecte, "errors": errors,
+        "total_lignes": created + updated + len(errors),
+    }
 
 
 @router.patch("/sites/{site_id}", response_model=SiteGSMOut)
@@ -467,8 +661,130 @@ def export_vehicules(db: Session = Depends(get_db)):
     )
 
 
+@router.get("/vehicules/export-excel")
+def export_vehicules_excel(
+    filter_sim:  Optional[str]  = None,
+    search:      Optional[str]  = None,
+    cols:        Optional[str]  = None,
+    date_debut:  Optional[date] = None,
+    date_fin:    Optional[date] = None,
+    db: Session = Depends(get_db),
+):
+    """Export Excel stylisé des véhicules."""
+    import io as _io
+    from datetime import datetime
+    from openpyxl import Workbook
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    vehicules = db.query(Vehicule).order_by(Vehicule.immatriculation).all()
+    sim_map   = _vehicule_sim_map(db)
+
+    class VRow:
+        def __init__(self, v):
+            self.id = v.id; self.immatriculation = v.immatriculation
+            self.marque = v.marque; self.modele = v.modele
+            self.affectation = v.affectation; self.created_at = v.created_at
+            self.sim_numero = sim_map.get(v.id)
+
+    rows_data = [VRow(v) for v in vehicules]
+    if filter_sim == "affecte":      rows_data = [r for r in rows_data if r.sim_numero]
+    elif filter_sim == "non_affecte": rows_data = [r for r in rows_data if not r.sim_numero]
+    if date_debut: rows_data = [r for r in rows_data if r.created_at and r.created_at.date() >= date_debut]
+    if date_fin:   rows_data = [r for r in rows_data if r.created_at and r.created_at.date() <= date_fin]
+    if search:
+        q = search.lower()
+        rows_data = [r for r in rows_data if
+            q in (r.immatriculation or "").lower() or q in (r.marque or "").lower() or
+            q in (r.modele or "").lower() or q in (r.sim_numero or "").lower()]
+
+    ALL_COLS = [
+        ("immat",      "Immatriculation",  lambda r: r.immatriculation or ""),
+        ("marque",     "Marque",           lambda r: r.marque or ""),
+        ("modele",     "Modèle",           lambda r: r.modele or ""),
+        ("affectation","Affectation",      lambda r: r.affectation or ""),
+        ("sim_numero", "Numéro SIM",       lambda r: r.sim_numero or ""),
+        ("statut_sim", "Statut SIM",       lambda r: "Affecté" if r.sim_numero else "Non affecté"),
+        ("created_at", "Date création",    lambda r: r.created_at.strftime("%d/%m/%Y") if r.created_at else ""),
+    ]
+    selected_keys = set(cols.split(",")) if cols else {c[0] for c in ALL_COLS}
+    columns = [(k, lbl, fn) for k, lbl, fn in ALL_COLS if k in selected_keys]
+
+    BLUE_HDR = "1B3D6F"; WHITE = "FFFFFF"; ROW_EVEN = "EEF4FF"; BORDER_COL = "C5D3E8"
+    thin = Side(style="thin", color=BORDER_COL)
+    border_all = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    wb = Workbook(); ws = wb.active; ws.title = "Véhicules"
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
+    tc = ws.cell(row=1, column=1, value="INVENTAIRE DES VÉHICULES")
+    tc.font = Font(name="Calibri", bold=True, size=14, color=WHITE)
+    tc.fill = PatternFill("solid", fgColor=BLUE_HDR)
+    tc.alignment = Alignment(horizontal="center", vertical="center"); ws.row_dimensions[1].height = 32
+
+    parts = [f"Exporté le {datetime.now().strftime('%d/%m/%Y')}"]
+    if date_debut: parts.append(f"Du {date_debut.strftime('%d/%m/%Y')}")
+    if date_fin:   parts.append(f"au {date_fin.strftime('%d/%m/%Y')}")
+    if filter_sim == "affecte":       parts.append("Avec SIM affecté")
+    elif filter_sim == "non_affecte": parts.append("Sans SIM affecté")
+    parts.append(f"{len(rows_data)} véhicule(s)")
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(columns))
+    sc = ws.cell(row=2, column=1, value="  |  ".join(parts))
+    sc.font = Font(name="Calibri", italic=True, size=9, color="5B7DB1")
+    sc.fill = PatternFill("solid", fgColor="D9E6F7")
+    sc.alignment = Alignment(horizontal="left", vertical="center", indent=1); ws.row_dimensions[2].height = 18
+    ws.row_dimensions[3].height = 6
+
+    HDR_ROW = 4
+    for ci, (_, lbl, _fn) in enumerate(columns, start=1):
+        c = ws.cell(row=HDR_ROW, column=ci, value=lbl)
+        c.font = Font(name="Calibri", bold=True, size=10, color=WHITE)
+        c.fill = PatternFill("solid", fgColor=BLUE_HDR)
+        c.alignment = Alignment(horizontal="center", vertical="center"); c.border = border_all
+    ws.row_dimensions[HDR_ROW].height = 24; ws.freeze_panes = ws.cell(row=HDR_ROW + 1, column=1)
+
+    for ri, r in enumerate(rows_data):
+        row_num = HDR_ROW + 1 + ri
+        row_fill = PatternFill("solid", fgColor=(ROW_EVEN if ri % 2 == 0 else WHITE))
+        for ci, (_, _lbl, fn) in enumerate(columns, start=1):
+            c = ws.cell(row=row_num, column=ci, value=fn(r))
+            c.fill = row_fill; c.font = Font(name="Calibri", size=10)
+            c.alignment = Alignment(vertical="center", horizontal="left", indent=1); c.border = border_all
+        ws.row_dimensions[row_num].height = 18
+
+    for ci, (_, lbl, fn) in enumerate(columns, start=1):
+        max_len = max((len(fn(r)) for r in rows_data), default=0)
+        ws.column_dimensions[get_column_letter(ci)].width = max(len(lbl) + 2, min(max_len + 2, 40))
+
+    ws.oddFooter.center.text = "&\"Calibri\"&8 CAMUSAT — Véhicules  |  Page &P / &N"
+    buf = _io.BytesIO(); wb.save(buf); buf.seek(0)
+
+    fname = "vehicules"
+    if date_debut: fname += f"_du_{date_debut}"
+    if date_fin:   fname += f"_au_{date_fin}"
+    fname += ".xlsx"
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    )
+
+
 @router.post("/vehicules/import")
 async def import_vehicules(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Formats acceptés (séparateur ; ou tabulation) :
+    - Nouveau format CAMUSAT : Numéro ; IMSI ; IMMATRICULATION ; MODEL
+    - Ancien format           : Immatriculation ; Marque ; Modèle ; Affectation
+
+    Si la colonne "Numéro" contient un numéro SIM existant,
+    une affectation est créée automatiquement entre ce SIM et le véhicule.
+    """
+    import unicodedata as _ud
+    from datetime import date as _date
+
     content = await file.read()
     try:
         text = content.decode("utf-8-sig")
@@ -476,38 +792,74 @@ async def import_vehicules(file: UploadFile = File(...), db: Session = Depends(g
         text = content.decode("latin-1")
 
     def norm(s: str) -> str:
-        import unicodedata
-        s = unicodedata.normalize("NFD", s)
-        s = "".join(c for c in s if unicodedata.category(c) != "Mn")
-        return s.strip().upper().replace(" ", "_").replace("/", "_")
+        s = _ud.normalize("NFD", s)
+        s = "".join(c for c in s if _ud.category(c) != "Mn")
+        return s.strip().upper().replace(" ", "_").replace("/", "_").replace("'", "")
 
-    reader = csv.DictReader(io.StringIO(text), delimiter=";")
-    created, updated, errors = 0, 0, []
+    first_line = text.split("\n")[0]
+    sep = ";" if ";" in first_line else "\t"
+
+    reader = csv.DictReader(io.StringIO(text), delimiter=sep)
+    created, updated, affecte, errors = 0, 0, 0, []
 
     for i, raw_row in enumerate(reader, start=2):
         row = {norm(k): (v.strip() if v else "") for k, v in raw_row.items()}
 
-        immat = row.get("IMMATRICULATION", "").strip()
+        # Immatriculation
+        immat = (row.get("IMMATRICULATION") or row.get("IMMAT") or "").strip()
         if not immat:
             errors.append({"ligne": i, "message": "Immatriculation manquante"}); continue
 
-        marque      = row.get("MARQUE",      "") or None
-        modele      = row.get("MODELE",      row.get("MODELE_", "")) or None
-        affectation = row.get("AFFECTATION", "") or None
+        # Modèle (nouveau : MODEL, ancien : MODELE)
+        modele      = row.get("MODEL") or row.get("MODELE") or row.get("MODELE_") or None
+        marque      = row.get("MARQUE") or None
+        affectation = row.get("AFFECTATION") or None
 
+        # Numéro SIM (nouveau format)
+        sim_numero = (row.get("NUMERO") or row.get("NUM") or "").strip() or None
+
+        # Créer ou mettre à jour
         existing = db.query(Vehicule).filter(Vehicule.immatriculation == immat).first()
         if existing:
-            if marque:      existing.marque      = marque
             if modele:      existing.modele      = modele
+            if marque:      existing.marque      = marque
             if affectation: existing.affectation = affectation
+            veh_obj = existing
             updated += 1
         else:
-            db.add(Vehicule(immatriculation=immat, marque=marque,
-                            modele=modele, affectation=affectation))
+            veh_obj = Vehicule(immatriculation=immat, marque=marque,
+                               modele=modele, affectation=affectation)
+            db.add(veh_obj)
+            db.flush()
             created += 1
 
+        # Auto-affectation SIM
+        if sim_numero:
+            sim_obj = db.query(NumeroSIM).filter(NumeroSIM.numero == sim_numero).first()
+            if sim_obj:
+                existing_aff = db.query(AffectationSIM).filter(
+                    AffectationSIM.vehicule_id == veh_obj.id,
+                    AffectationSIM.is_active == True,
+                ).first()
+                if not existing_aff:
+                    old_aff = db.query(AffectationSIM).filter(
+                        AffectationSIM.sim_id == sim_obj.id,
+                        AffectationSIM.is_active == True,
+                    ).first()
+                    if old_aff:
+                        old_aff.is_active = False
+                        old_aff.date_fin  = _date.today()
+                    db.add(AffectationSIM(
+                        sim_id      = sim_obj.id,
+                        vehicule_id = veh_obj.id,
+                        date_debut  = _date.today(),
+                        is_active   = True,
+                    ))
+                    affecte += 1
+
     db.commit()
-    return {"created": created, "updated": updated, "errors": errors,
+    return {"created": created, "updated": updated,
+            "affecte": affecte, "errors": errors,
             "total_lignes": created + updated + len(errors)}
 
 

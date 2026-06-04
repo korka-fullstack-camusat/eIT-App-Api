@@ -39,6 +39,7 @@ class Vehicule(Base):
     immatriculation = Column(String(20), unique=True, nullable=False)
     marque         = Column(String(100), nullable=True)
     modele         = Column(String(100), nullable=True)
+    imsi           = Column(String(20),  nullable=True)
     affectation    = Column(String(200), nullable=True)
     created_at     = Column(DateTime(timezone=True), server_default=func.now())
 

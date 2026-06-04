@@ -43,6 +43,7 @@ with engine.connect() as conn:
         # Nouveaux statuts SIM
         "ALTER TYPE statutsimenum ADD VALUE IF NOT EXISTS 'RESILIE'",
         "ALTER TYPE statutsimenum ADD VALUE IF NOT EXISTS 'CEDE'",
+        "ALTER TABLE vehicules ADD COLUMN IF NOT EXISTS imsi VARCHAR(20)",
     ]
     for sql in migrations:
         try:

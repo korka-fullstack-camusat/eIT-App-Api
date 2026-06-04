@@ -23,6 +23,7 @@ class VehiculeCreate(BaseModel):
     immatriculation: str
     marque:          Optional[str] = None
     modele:          Optional[str] = None
+    imsi:            Optional[str] = None
     affectation:     Optional[str] = None
 
 
