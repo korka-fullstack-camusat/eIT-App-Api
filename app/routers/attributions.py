@@ -10,6 +10,8 @@ from ..models.attribution import Attribution, StatutAttribution
 from ..models.materiel import Materiel, StatutMateriel
 from ..schemas.attribution import AttributionCreate, AttributionOut, RestitutionCreate
 from ..services.pdf_service import generate_decharge_pdf, generate_attestation_pdf
+from ..models.user import User
+from ..services.auth_service import require_editor
 
 
 class AttributionUpdate(BaseModel):
@@ -62,7 +64,7 @@ def list_attributions(
 
 
 @router.post("/", response_model=AttributionOut, status_code=201)
-def create_attribution(data: AttributionCreate, db: Session = Depends(get_db)):
+def create_attribution(data: AttributionCreate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     materiel = db.query(Materiel).filter(Materiel.id == data.materiel_id).first()
     if not materiel:
         raise HTTPException(404, "Matériel introuvable")
@@ -235,7 +237,7 @@ def get_attribution(attribution_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/{attribution_id}", response_model=AttributionOut)
-def update_attribution(attribution_id: int, data: AttributionUpdate, db: Session = Depends(get_db)):
+def update_attribution(attribution_id: int, data: AttributionUpdate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(Attribution).filter(Attribution.id == attribution_id).first()
     if not obj:
         raise HTTPException(404, "Attribution introuvable")
@@ -250,7 +252,7 @@ def update_attribution(attribution_id: int, data: AttributionUpdate, db: Session
 
 
 @router.post("/{attribution_id}/restitution", response_model=AttributionOut)
-def restituer(attribution_id: int, data: RestitutionCreate, db: Session = Depends(get_db)):
+def restituer(attribution_id: int, data: RestitutionCreate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = _get_or_404(db, attribution_id)
     if obj.statut == StatutAttribution.CLOTUREE:
         raise HTTPException(400, "Attribution déjà clôturée")
@@ -311,7 +313,7 @@ def attributions_par_employee(employee_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{attribution_id}/transferer", status_code=201)
-def transferer(attribution_id: int, data: dict, db: Session = Depends(get_db)):
+def transferer(attribution_id: int, data: dict, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     """Clôture l'attribution en cours et crée immédiatement la suivante."""
     from pydantic import BaseModel
     from typing import Optional as Opt

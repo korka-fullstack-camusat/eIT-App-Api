@@ -12,6 +12,8 @@ from ..services.template_service import (
     generate_attestation_from_template, generate_decharge_from_template,
     TEMPLATE_PATHS,
 )
+from ..models.user import User
+from ..services.auth_service import require_editor
 
 router = APIRouter(prefix="/api/templates", tags=["Templates"])
 
@@ -19,7 +21,7 @@ DOC_TYPES = {"attestation", "decharge"}
 
 
 @router.post("/{doc_type}/upload")
-async def upload_template(doc_type: str, file: UploadFile = File(...)):
+async def upload_template(doc_type: str, file: UploadFile = File(...), _: User = Depends(require_editor)):
     """Upload un template Word (.docx) pour attestation ou décharge."""
     if doc_type not in DOC_TYPES:
         raise HTTPException(400, f"Type invalide. Valeurs acceptées : {', '.join(DOC_TYPES)}")
@@ -62,7 +64,7 @@ def get_templates_info():
 
 
 @router.delete("/{doc_type}")
-def delete_template(doc_type: str):
+def delete_template(doc_type: str, _: User = Depends(require_editor)):
     """Supprime un template uploadé (revient au PDF généré par défaut)."""
     if doc_type not in DOC_TYPES:
         raise HTTPException(400, "Type invalide")

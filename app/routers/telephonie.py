@@ -13,6 +13,8 @@ from ..schemas.telephonie import (
     VehiculeCreate, VehiculeOut,
     AffectationSIMCreate, AffectationSIMOut, DesaffectationSIMIn,
 )
+from ..models.user import User
+from ..services.auth_service import require_editor
 
 router = APIRouter(prefix="/api/telephonie", tags=["Téléphonie"])
 
@@ -33,7 +35,7 @@ def list_sims(
 
 
 @router.post("/sims", response_model=NumeroSIMOut, status_code=201)
-def create_sim(data: NumeroSIMCreate, db: Session = Depends(get_db)):
+def create_sim(data: NumeroSIMCreate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     if db.query(NumeroSIM).filter(NumeroSIM.numero == data.numero).first():
         raise HTTPException(400, "Ce numéro existe déjà")
     obj = NumeroSIM(**data.model_dump())
@@ -179,7 +181,7 @@ def export_sims_excel(
 
 
 @router.post("/sims/import")
-async def import_sims(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_sims(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
     CAT_MAP = {
         "EMPLOYE": "EMPLOYE", "EMPLOYÉ": "EMPLOYE", "EMPLOYE": "EMPLOYE",
         "M2M_SITE": "M2M_SITE", "M2M SITE": "M2M_SITE", "SITE": "M2M_SITE",
@@ -237,7 +239,7 @@ async def import_sims(file: UploadFile = File(...), db: Session = Depends(get_db
 
 
 @router.patch("/sims/{sim_id}", response_model=NumeroSIMOut)
-def update_sim(sim_id: int, data: NumeroSIMUpdate, db: Session = Depends(get_db)):
+def update_sim(sim_id: int, data: NumeroSIMUpdate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(NumeroSIM).filter(NumeroSIM.id == sim_id).first()
     if not obj: raise HTTPException(404, "SIM introuvable")
     for k, v in data.model_dump(exclude_none=True).items():
@@ -247,7 +249,7 @@ def update_sim(sim_id: int, data: NumeroSIMUpdate, db: Session = Depends(get_db)
 
 
 @router.delete("/sims/{sim_id}", status_code=204)
-def delete_sim(sim_id: int, db: Session = Depends(get_db)):
+def delete_sim(sim_id: int, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(NumeroSIM).filter(NumeroSIM.id == sim_id).first()
     if not obj: raise HTTPException(404, "SIM introuvable")
     db.delete(obj); db.commit()
@@ -256,7 +258,7 @@ def delete_sim(sim_id: int, db: Session = Depends(get_db)):
 # ── Affectations SIM ──────────────────────────────────────────────────────────
 
 @router.post("/sims/{sim_id}/affecter", response_model=AffectationSIMOut, status_code=201)
-def affecter_sim(sim_id: int, data: AffectationSIMCreate, db: Session = Depends(get_db)):
+def affecter_sim(sim_id: int, data: AffectationSIMCreate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     active = db.query(AffectationSIM).filter(
         AffectationSIM.sim_id == sim_id, AffectationSIM.is_active == True
     ).first()
@@ -272,7 +274,7 @@ def affecter_sim(sim_id: int, data: AffectationSIMCreate, db: Session = Depends(
 
 
 @router.patch("/sims/{sim_id}/desaffecter", response_model=AffectationSIMOut)
-def desaffecter_sim(sim_id: int, data: DesaffectationSIMIn, db: Session = Depends(get_db)):
+def desaffecter_sim(sim_id: int, data: DesaffectationSIMIn, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     active = db.query(AffectationSIM).filter(
         AffectationSIM.sim_id == sim_id, AffectationSIM.is_active == True
     ).first()
@@ -324,7 +326,7 @@ def list_sites(db: Session = Depends(get_db)):
 
 
 @router.post("/sites", response_model=SiteGSMOut, status_code=201)
-def create_site(data: SiteGSMCreate, db: Session = Depends(get_db)):
+def create_site(data: SiteGSMCreate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = SiteGSM(**data.model_dump())
     db.add(obj); db.commit(); db.refresh(obj)
     return obj
@@ -475,7 +477,7 @@ def export_sites_excel(
 
 
 @router.post("/sites/import")
-async def import_sites(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_sites(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
     """
     Accepte deux formats de colonnes (séparateur ;) :
     - Nouveau format CAMUSAT : Numéro ; IMSI ; SITES ID ; NOMS SITES
@@ -593,7 +595,7 @@ async def import_sites(file: UploadFile = File(...), db: Session = Depends(get_d
 
 
 @router.patch("/sites/{site_id}", response_model=SiteGSMOut)
-def update_site(site_id: int, data: SiteGSMCreate, db: Session = Depends(get_db)):
+def update_site(site_id: int, data: SiteGSMCreate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(SiteGSM).filter(SiteGSM.id == site_id).first()
     if not obj: raise HTTPException(404, "Site introuvable")
     for k, v in data.model_dump(exclude_none=True).items():
@@ -603,7 +605,7 @@ def update_site(site_id: int, data: SiteGSMCreate, db: Session = Depends(get_db)
 
 
 @router.delete("/sites/{site_id}", status_code=204)
-def delete_site(site_id: int, db: Session = Depends(get_db)):
+def delete_site(site_id: int, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(SiteGSM).filter(SiteGSM.id == site_id).first()
     if not obj: raise HTTPException(404, "Site introuvable")
     db.delete(obj); db.commit()
@@ -773,7 +775,7 @@ def export_vehicules_excel(
 
 
 @router.post("/vehicules/import")
-async def import_vehicules(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_vehicules(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
     """
     Formats acceptés (séparateur ; ou tabulation) :
     - Nouveau format CAMUSAT : Numéro ; IMSI ; IMMATRICULATION ; MODEL
@@ -864,7 +866,7 @@ async def import_vehicules(file: UploadFile = File(...), db: Session = Depends(g
 
 
 @router.post("/vehicules", response_model=VehiculeOut, status_code=201)
-def create_vehicule(data: VehiculeCreate, db: Session = Depends(get_db)):
+def create_vehicule(data: VehiculeCreate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     if db.query(Vehicule).filter(Vehicule.immatriculation == data.immatriculation).first():
         raise HTTPException(400, "Immatriculation déjà enregistrée")
     obj = Vehicule(**data.model_dump())
@@ -873,7 +875,7 @@ def create_vehicule(data: VehiculeCreate, db: Session = Depends(get_db)):
 
 
 @router.patch("/vehicules/{vehicule_id}", response_model=VehiculeOut)
-def update_vehicule(vehicule_id: int, data: VehiculeCreate, db: Session = Depends(get_db)):
+def update_vehicule(vehicule_id: int, data: VehiculeCreate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(Vehicule).filter(Vehicule.id == vehicule_id).first()
     if not obj: raise HTTPException(404, "Véhicule introuvable")
     for k, v in data.model_dump(exclude_none=True).items():
@@ -883,7 +885,7 @@ def update_vehicule(vehicule_id: int, data: VehiculeCreate, db: Session = Depend
 
 
 @router.delete("/vehicules/{vehicule_id}", status_code=204)
-def delete_vehicule(vehicule_id: int, db: Session = Depends(get_db)):
+def delete_vehicule(vehicule_id: int, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(Vehicule).filter(Vehicule.id == vehicule_id).first()
     if not obj: raise HTTPException(404, "Véhicule introuvable")
     db.delete(obj); db.commit()

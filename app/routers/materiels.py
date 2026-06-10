@@ -8,6 +8,8 @@ from ..database import get_db
 from ..models.materiel import Materiel, StatutMateriel, TypeMateriel, EtatMateriel
 from ..models.attribution import Attribution, StatutAttribution
 from ..schemas.materiel import MaterielCreate, MaterielUpdate, MaterielOut, AttributionActiveInfo
+from ..models.user import User
+from ..services.auth_service import require_editor
 
 router = APIRouter(prefix="/api/materiels", tags=["Matériels"])
 
@@ -52,7 +54,7 @@ def list_materiels(
 
 
 @router.post("/", response_model=MaterielOut, status_code=201)
-def create_materiel(data: MaterielCreate, db: Session = Depends(get_db)):
+def create_materiel(data: MaterielCreate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = Materiel(**data.model_dump())
     db.add(obj)
     db.commit()
@@ -91,7 +93,7 @@ def get_materiel(materiel_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/{materiel_id}", response_model=MaterielOut)
-def update_materiel(materiel_id: int, data: MaterielUpdate, db: Session = Depends(get_db)):
+def update_materiel(materiel_id: int, data: MaterielUpdate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(Materiel).filter(Materiel.id == materiel_id).first()
     if not obj:
         raise HTTPException(404, "Matériel introuvable")
@@ -103,7 +105,7 @@ def update_materiel(materiel_id: int, data: MaterielUpdate, db: Session = Depend
 
 
 @router.delete("/{materiel_id}", status_code=204)
-def delete_materiel(materiel_id: int, db: Session = Depends(get_db)):
+def delete_materiel(materiel_id: int, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(Materiel).filter(Materiel.id == materiel_id).first()
     if not obj:
         raise HTTPException(404, "Matériel introuvable")
@@ -114,7 +116,7 @@ def delete_materiel(materiel_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/import")
-async def import_materiels(file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def import_materiels(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
     import csv, io
     from ..models.materiel import TypeMateriel, EtatMateriel
 

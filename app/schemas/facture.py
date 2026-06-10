@@ -17,6 +17,19 @@ class LigneFactureOut(BaseModel):
     numero_raw:  str
     montant:     Decimal
     non_reconnu: str
+
+    # ── Détail récapitulatif (extrait tel quel du fichier) ──
+    reference_facture: Optional[str] = None
+    montant_ht:        Optional[Decimal] = None
+    rutel:             Optional[Decimal] = None
+    montant_ht_rutel:  Optional[Decimal] = None
+    tva:               Optional[Decimal] = None
+    montant_ttc:       Optional[Decimal] = None
+    arrondi_precedent: Optional[Decimal] = None
+    arrondi_encours:   Optional[Decimal] = None
+    solde_facture:     Optional[Decimal] = None
+    type_ligne:        Optional[str] = None
+
     class Config:
         from_attributes = True
 
@@ -26,6 +39,23 @@ class FactureOut(FactureCreate):
     nom_fichier: Optional[str]
     created_at:  datetime
     lignes:      list[LigneFactureOut] = []
+
+    # ── Récapitulatif facture ──
+    numero_compte:     Optional[str] = None
+    reference_facture: Optional[str] = None
+    montant_ht:        Optional[Decimal] = None
+    rutel:             Optional[Decimal] = None
+    montant_ht_rutel:  Optional[Decimal] = None
+    tva:               Optional[Decimal] = None
+    montant_ttc:       Optional[Decimal] = None
+    arrondi_precedent: Optional[Decimal] = None
+    arrondi_encours:   Optional[Decimal] = None
+    solde_facture:     Optional[Decimal] = None
+
+    # ── Écart vs mois précédent (calculé) ──
+    ecart:             Optional[Decimal] = None
+    ecart_pct:         Optional[float] = None
+
     class Config:
         from_attributes = True
 

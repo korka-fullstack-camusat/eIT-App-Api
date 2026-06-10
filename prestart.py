@@ -44,6 +44,31 @@ with engine.connect() as conn:
         "ALTER TYPE statutsimenum ADD VALUE IF NOT EXISTS 'RESILIE'",
         "ALTER TYPE statutsimenum ADD VALUE IF NOT EXISTS 'CEDE'",
         "ALTER TABLE vehicules ADD COLUMN IF NOT EXISTS imsi VARCHAR(20)",
+        # Rôles utilisateurs (ADMIN / EDITOR / VIEWER)
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'EDITOR'",
+        "UPDATE users SET role = 'ADMIN' WHERE username = 'admin'",
+        # Récapitulatif facture télécom (import au format opérateur)
+        "ALTER TABLE factures_telecom ADD COLUMN IF NOT EXISTS numero_compte VARCHAR(50)",
+        "ALTER TABLE factures_telecom ADD COLUMN IF NOT EXISTS reference_facture VARCHAR(50)",
+        "ALTER TABLE factures_telecom ADD COLUMN IF NOT EXISTS montant_ht NUMERIC(14,2)",
+        "ALTER TABLE factures_telecom ADD COLUMN IF NOT EXISTS rutel NUMERIC(14,2)",
+        "ALTER TABLE factures_telecom ADD COLUMN IF NOT EXISTS montant_ht_rutel NUMERIC(14,2)",
+        "ALTER TABLE factures_telecom ADD COLUMN IF NOT EXISTS tva NUMERIC(14,2)",
+        "ALTER TABLE factures_telecom ADD COLUMN IF NOT EXISTS montant_ttc NUMERIC(14,2)",
+        "ALTER TABLE factures_telecom ADD COLUMN IF NOT EXISTS arrondi_precedent NUMERIC(14,2)",
+        "ALTER TABLE factures_telecom ADD COLUMN IF NOT EXISTS arrondi_encours NUMERIC(14,2)",
+        "ALTER TABLE factures_telecom ADD COLUMN IF NOT EXISTS solde_facture NUMERIC(14,2)",
+        # Détail récapitulatif par ligne (par numéro)
+        "ALTER TABLE lignes_facture ADD COLUMN IF NOT EXISTS reference_facture VARCHAR(50)",
+        "ALTER TABLE lignes_facture ADD COLUMN IF NOT EXISTS montant_ht NUMERIC(14,2)",
+        "ALTER TABLE lignes_facture ADD COLUMN IF NOT EXISTS rutel NUMERIC(14,2)",
+        "ALTER TABLE lignes_facture ADD COLUMN IF NOT EXISTS montant_ht_rutel NUMERIC(14,2)",
+        "ALTER TABLE lignes_facture ADD COLUMN IF NOT EXISTS tva NUMERIC(14,2)",
+        "ALTER TABLE lignes_facture ADD COLUMN IF NOT EXISTS montant_ttc NUMERIC(14,2)",
+        "ALTER TABLE lignes_facture ADD COLUMN IF NOT EXISTS arrondi_precedent NUMERIC(14,2)",
+        "ALTER TABLE lignes_facture ADD COLUMN IF NOT EXISTS arrondi_encours NUMERIC(14,2)",
+        "ALTER TABLE lignes_facture ADD COLUMN IF NOT EXISTS solde_facture NUMERIC(14,2)",
+        "ALTER TABLE lignes_facture ADD COLUMN IF NOT EXISTS type_ligne VARCHAR(50)",
     ]
     for sql in migrations:
         try:
@@ -51,6 +76,7 @@ with engine.connect() as conn:
             conn.commit()
         except Exception as e:
             print(f"  [WARN] {e}")
+            conn.rollback()
 print("✓ Migrations OK.")
 
 db = SessionLocal()
@@ -61,6 +87,7 @@ try:
             full_name="Administrateur",
             hashed_password=hash_password("admin123"),
             is_active=True,
+            role="ADMIN",
         ))
         db.commit()
         print("✓ Utilisateur admin créé (admin / admin123).")

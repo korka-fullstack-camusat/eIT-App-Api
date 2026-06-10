@@ -49,3 +49,24 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     if user is None or not user.is_active:
         raise credentials_exception
     return user
+
+
+def require_editor(current_user: User = Depends(get_current_user)) -> User:
+    """À utiliser sur les routes de création/modification/suppression/import.
+    Bloque les comptes en lecture seule (role == VIEWER)."""
+    if current_user.role == "VIEWER":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès en lecture seule : action non autorisée pour votre compte.",
+        )
+    return current_user
+
+
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """À utiliser sur les routes de gestion des comptes utilisateurs."""
+    if current_user.role != "ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Action réservée aux administrateurs.",
+        )
+    return current_user
