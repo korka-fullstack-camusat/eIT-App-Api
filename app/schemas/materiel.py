@@ -11,6 +11,10 @@ class MaterielBase(BaseModel):
     numero_serie:     Optional[str] = None
     adresse_mac:      Optional[str] = None
     numero_bon_cmd:   Optional[str] = None
+    projet:           Optional[str] = None
+    beneficiaire_matricule: Optional[str] = None
+    beneficiaire_nom:       Optional[str] = None
+    beneficiaire_prenom:    Optional[str] = None
     etat:             EtatMateriel = EtatMateriel.BON
     date_acquisition: Optional[date] = None
     description:      Optional[str] = None
@@ -27,6 +31,10 @@ class MaterielUpdate(BaseModel):
     numero_serie:     Optional[str] = None
     adresse_mac:      Optional[str] = None
     numero_bon_cmd:   Optional[str] = None
+    projet:           Optional[str] = None
+    beneficiaire_matricule: Optional[str] = None
+    beneficiaire_nom:       Optional[str] = None
+    beneficiaire_prenom:    Optional[str] = None
     etat:             Optional[EtatMateriel] = None
     statut:           Optional[StatutMateriel] = None
     date_acquisition: Optional[date] = None

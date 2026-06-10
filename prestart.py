@@ -69,6 +69,14 @@ with engine.connect() as conn:
         "ALTER TABLE lignes_facture ADD COLUMN IF NOT EXISTS arrondi_encours NUMERIC(14,2)",
         "ALTER TABLE lignes_facture ADD COLUMN IF NOT EXISTS solde_facture NUMERIC(14,2)",
         "ALTER TABLE lignes_facture ADD COLUMN IF NOT EXISTS type_ligne VARCHAR(50)",
+        # Champ Projet + nouveau type Tablette pour les matériels
+        "ALTER TABLE materiels ADD COLUMN IF NOT EXISTS projet VARCHAR(100)",
+        "ALTER TYPE typemateriel ADD VALUE IF NOT EXISTS 'TABLETTE'",
+        # Bénéficiaire (Matricule / Nom / Prénom) + remarque, repris du fichier de suivi
+        "ALTER TABLE materiels ADD COLUMN IF NOT EXISTS beneficiaire_matricule VARCHAR(50)",
+        "ALTER TABLE materiels ADD COLUMN IF NOT EXISTS beneficiaire_nom VARCHAR(100)",
+        "ALTER TABLE materiels ADD COLUMN IF NOT EXISTS beneficiaire_prenom VARCHAR(100)",
+        "ALTER TABLE materiels DROP COLUMN IF EXISTS remarque",
     ]
     for sql in migrations:
         try:

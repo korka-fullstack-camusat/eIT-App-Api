@@ -19,6 +19,8 @@ def list_materiels(
     statut:        Optional[StatutMateriel] = None,
     type_materiel: Optional[TypeMateriel]   = None,
     etat:          Optional[EtatMateriel]   = None,
+    projet:        Optional[str]            = None,
+    assigne:       Optional[str]            = None,  # "OUI" | "NON"
     search:        Optional[str]            = None,
     db: Session = Depends(get_db),
 ):
@@ -29,6 +31,8 @@ def list_materiels(
         q = q.filter(Materiel.type_materiel == type_materiel)
     if etat:
         q = q.filter(Materiel.etat == etat)
+    if projet:
+        q = q.filter(Materiel.projet == projet)
     if search:
         term = f"%{search}%"
         q = q.filter(
@@ -49,6 +53,12 @@ def list_materiels(
         )
         if active:
             item.attribution_active = AttributionActiveInfo.model_validate(active)
+
+        if assigne in ("OUI", "NON"):
+            is_assigned = bool(item.attribution_active or item.beneficiaire_nom or item.beneficiaire_prenom)
+            if (assigne == "OUI") != is_assigned:
+                continue
+
         result.append(item)
     return result
 
@@ -117,6 +127,14 @@ def delete_materiel(materiel_id: int, db: Session = Depends(get_db), _: User = D
 
 @router.post("/import")
 async def import_materiels(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
+    content = await file.read()
+    filename = (file.filename or "").lower()
+    if filename.endswith(".xlsx"):
+        return _import_materiels_xlsx(content, db)
+    return _import_materiels_csv(content, db)
+
+
+def _import_materiels_csv(content: bytes, db: Session):
     import csv, io
     from ..models.materiel import TypeMateriel, EtatMateriel
 
@@ -133,7 +151,6 @@ async def import_materiels(file: UploadFile = File(...), db: Session = Depends(g
         "DEFECTUEUX": "DEFECTUEUX", "DÉFECTUEUX": "DEFECTUEUX",
     }
 
-    content = await file.read()
     try:
         text = content.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -185,6 +202,163 @@ async def import_materiels(file: UploadFile = File(...), db: Session = Depends(g
 
     db.commit()
     return {"created": created, "errors": errors, "total_lignes": created + len(errors)}
+
+
+def _import_materiels_xlsx(content: bytes, db: Session):
+    """Import depuis un fichier 'Suivi Parc' (.xlsx) — ne récupère que les
+    informations relatives au matériel (nature, désignation, n° série,
+    adresse MAC, n° PO, projet, date d'attribution, statut)."""
+    import io, re, unicodedata
+    from datetime import datetime as dt_datetime, date as dt_date2
+    from openpyxl import load_workbook
+    from ..models.materiel import TypeMateriel, EtatMateriel, StatutMateriel
+
+    NATURE_MAP = {
+        "PC": "ORDINATEUR_PORTABLE",
+        "ORDINATEUR": "ORDINATEUR_PORTABLE",
+        "ORDINATEURPORTABLE": "ORDINATEUR_PORTABLE",
+        "ORDINATEURFIXE": "ORDINATEUR_FIXE",
+        "PCPORTABLE": "ORDINATEUR_PORTABLE",
+        "PCFIXE": "ORDINATEUR_FIXE",
+        "TELEPHONE": "TELEPHONE",
+        "TABLETTE": "TABLETTE",
+        "ECRAN": "ECRAN",
+        "SOURIS": "SOURIS",
+        "CLAVIER": "CLAVIER",
+        "CASQUE": "AUTRE",
+        "IMPRIMANTE": "IMPRIMANTE",
+        "SWITCH": "SWITCH",
+        "ROUTEUR": "ROUTEUR",
+        "ONDULEUR": "ONDULEUR",
+    }
+    STATUT_MAP = {
+        "ENSERVICE": "ATTRIBUE",
+        "ENPANNE": "EN_PANNE",
+        "ENSTOCK": "DISPONIBLE",
+        "REFORME": "REFORME",
+        "MAINTENANCE": "MAINTENANCE",
+        "ENMAINTENANCE": "MAINTENANCE",
+        "RESTITUE": "DISPONIBLE",
+    }
+
+    def norm(s) -> str:
+        s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode()
+        return re.sub(r"[^A-Z0-9]", "", s.upper())
+
+    try:
+        wb = load_workbook(io.BytesIO(content), data_only=True)
+    except Exception:
+        raise HTTPException(400, "Fichier Excel illisible.")
+
+    sheet_name = "Suivi Parc Informatique" if "Suivi Parc Informatique" in wb.sheetnames else wb.sheetnames[0]
+    ws = wb[sheet_name]
+
+    # Repérer la ligne d'en-tête (celle qui contient la colonne "Nature")
+    header_row_idx, headers = None, {}
+    for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=5, values_only=True), start=1):
+        normalized = [norm(v) if v is not None else "" for v in row]
+        if "NATURE" in normalized:
+            header_row_idx = r_idx
+            headers = {h: c for c, h in enumerate(normalized) if h}
+            break
+    if header_row_idx is None:
+        raise HTTPException(400, "Format non reconnu : colonne 'Nature' introuvable dans le fichier.")
+
+    def col(row, *names):
+        for name in names:
+            idx = headers.get(name)
+            if idx is not None and idx < len(row):
+                v = row[idx]
+                if isinstance(v, str):
+                    v = v.strip()
+                if v not in (None, ""):
+                    return v
+        return None
+
+    existing_series = {
+        s for (s,) in db.query(Materiel.numero_serie).filter(Materiel.numero_serie.isnot(None)).all()
+    }
+
+    created, errors = 0, []
+    for i, row in enumerate(ws.iter_rows(min_row=header_row_idx + 1, values_only=True), start=header_row_idx + 1):
+        if all(v is None for v in row):
+            continue
+
+        nature = col(row, "NATURE")
+        if not nature:
+            continue
+
+        type_val = NATURE_MAP.get(norm(nature))
+        if not type_val:
+            errors.append({"ligne": i, "message": f"Nature non reconnue : '{nature}'"})
+            continue
+
+        designation = col(row, "DESIGNATIONEQUIPEMENT") or ""
+        designation = str(designation).strip()
+        if designation:
+            parts = designation.split(maxsplit=1)
+            marque, modele = parts[0], (parts[1] if len(parts) > 1 else "")
+        else:
+            marque, modele = TYPE_LABELS_FALLBACK.get(type_val, "Matériel"), ""
+
+        numero_serie = col(row, "NSERIE", "NDESERIE")
+        numero_serie = str(numero_serie).strip() if numero_serie else None
+        if numero_serie and numero_serie in existing_series:
+            errors.append({"ligne": i, "message": f"N° série déjà existant : '{numero_serie}'"})
+            continue
+
+        adresse_mac    = col(row, "REFCARTERESEAU")
+        numero_bon_cmd = col(row, "PO")
+        projet         = col(row, "PROJET")
+        matricule      = col(row, "MATRICULE")
+        nom            = col(row, "NOM")
+        prenom         = col(row, "PRENOM")
+
+        date_attr_raw = col(row, "DATEDATTRIBUTION", "DATE")
+        date_acquisition = None
+        if isinstance(date_attr_raw, (dt_datetime, dt_date2)):
+            date_acquisition = date_attr_raw.date() if isinstance(date_attr_raw, dt_datetime) else date_attr_raw
+        elif isinstance(date_attr_raw, str) and date_attr_raw.strip():
+            for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+                try:
+                    date_acquisition = dt_datetime.strptime(date_attr_raw.strip(), fmt).date()
+                    break
+                except ValueError:
+                    pass
+
+        statut_raw = col(row, "STATUT")
+        statut_val = STATUT_MAP.get(norm(statut_raw), "DISPONIBLE") if statut_raw else "DISPONIBLE"
+
+        obj = Materiel(
+            type_materiel    = TypeMateriel(type_val),
+            marque           = str(marque)[:100],
+            modele           = str(modele)[:150] or None,
+            numero_serie     = numero_serie,
+            adresse_mac      = str(adresse_mac)[:50] if adresse_mac else None,
+            numero_bon_cmd   = str(numero_bon_cmd)[:100] if numero_bon_cmd else None,
+            projet           = str(projet)[:100] if projet else None,
+            beneficiaire_matricule = str(matricule)[:50] if matricule else None,
+            beneficiaire_nom       = str(nom)[:100] if nom else None,
+            beneficiaire_prenom    = str(prenom)[:100] if prenom else None,
+            etat             = EtatMateriel.BON,
+            statut           = StatutMateriel(statut_val),
+            date_acquisition = date_acquisition,
+        )
+        db.add(obj)
+        if numero_serie:
+            existing_series.add(numero_serie)
+        created += 1
+
+    db.commit()
+    return {"created": created, "errors": errors, "total_lignes": created + len(errors)}
+
+
+TYPE_LABELS_FALLBACK = {
+    "ORDINATEUR_PORTABLE": "PC", "ORDINATEUR_FIXE": "PC", "ECRAN": "Écran",
+    "SOURIS": "Souris", "CLAVIER": "Clavier", "TELEPHONE": "Téléphone",
+    "TABLETTE": "Tablette", "IMPRIMANTE": "Imprimante", "SWITCH": "Switch",
+    "ROUTEUR": "Routeur", "ONDULEUR": "Onduleur", "AUTRE": "Matériel",
+}
 
 
 def export_materiels_excel(
@@ -397,3 +571,15 @@ def stats_par_marque(db: Session = Depends(get_db)):
         .all()
     )
     return [{"marque": r[0], "count": r[1]} for r in rows]
+
+
+@router.get("/stats/par-projet")
+def stats_par_projet(db: Session = Depends(get_db)):
+    rows = (
+        db.query(Materiel.projet, func.count(Materiel.id))
+        .filter(Materiel.projet.isnot(None), Materiel.projet != "")
+        .group_by(Materiel.projet)
+        .order_by(Materiel.projet)
+        .all()
+    )
+    return [{"projet": r[0], "count": r[1]} for r in rows]

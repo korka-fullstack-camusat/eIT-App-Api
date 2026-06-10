@@ -12,6 +12,7 @@ class TypeMateriel(str, enum.Enum):
     SOURIS              = "SOURIS"
     CLAVIER             = "CLAVIER"
     TELEPHONE           = "TELEPHONE"
+    TABLETTE            = "TABLETTE"
     IMPRIMANTE          = "IMPRIMANTE"
     SWITCH              = "SWITCH"
     ROUTEUR             = "ROUTEUR"
@@ -44,6 +45,10 @@ class Materiel(Base):
     numero_serie    = Column(String(100), unique=True, nullable=True)
     adresse_mac     = Column(String(50), nullable=True)
     numero_bon_cmd  = Column(String(100), nullable=True)
+    projet          = Column(String(100), nullable=True)
+    beneficiaire_matricule = Column(String(50), nullable=True)
+    beneficiaire_nom       = Column(String(100), nullable=True)
+    beneficiaire_prenom    = Column(String(100), nullable=True)
     etat            = Column(Enum(EtatMateriel), default=EtatMateriel.BON)
     statut          = Column(Enum(StatutMateriel), default=StatutMateriel.DISPONIBLE, index=True)
     date_acquisition = Column(Date, nullable=True)
