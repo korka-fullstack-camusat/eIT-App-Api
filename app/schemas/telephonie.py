@@ -11,10 +11,18 @@ class SiteGSMCreate(BaseModel):
     localisation: Optional[str] = None
 
 
+class DerniereFactureInfo(BaseModel):
+    mois:        int
+    annee:       int
+    operateur:   Optional[str] = None
+    montant_ttc: Optional[float] = None
+
+
 class SiteGSMOut(SiteGSMCreate):
     id:          int
     created_at:  datetime
     sim_numero:  Optional[str] = None
+    derniere_facture: Optional[DerniereFactureInfo] = None
     class Config:
         from_attributes = True
 

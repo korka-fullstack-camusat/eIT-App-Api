@@ -6,6 +6,7 @@ from datetime import date
 import csv, io
 from ..database import get_db
 from ..models.telephonie import NumeroSIM, SiteGSM, Vehicule, AffectationSIM, CategorieSimEnum, StatutSimEnum
+from ..models.facture import FactureTelecom, LigneFacture
 from sqlalchemy import and_
 from ..schemas.telephonie import (
     NumeroSIMCreate, NumeroSIMUpdate, NumeroSIMOut,
@@ -300,9 +301,9 @@ def historique_sim(sim_id: int, db: Session = Depends(get_db)):
 # ── Sites GSM ─────────────────────────────────────────────────────────────────
 
 def _site_sim_map(db: Session) -> dict:
-    """Retourne un dict {site_id: sim_numero} pour toutes les affectations actives."""
+    """Retourne un dict {site_id: (sim_numero, sim_id)} pour toutes les affectations actives."""
     rows = (
-        db.query(AffectationSIM.site_id, NumeroSIM.numero)
+        db.query(AffectationSIM.site_id, NumeroSIM.numero, NumeroSIM.id)
         .join(NumeroSIM, NumeroSIM.id == AffectationSIM.sim_id)
         .filter(
             AffectationSIM.is_active == True,
@@ -310,19 +311,103 @@ def _site_sim_map(db: Session) -> dict:
         )
         .all()
     )
-    return {r.site_id: r.numero for r in rows}
+    return {r.site_id: (r.numero, r.id) for r in rows}
+
+
+def _latest_facture_map(db: Session) -> dict:
+    """Retourne un dict {sim_id: {mois, annee, operateur, montant_ttc}} correspondant
+    à la facture la plus récente (mois/année) reconnue pour chaque numéro SIM."""
+    from sqlalchemy import func as _func
+
+    latest_sub = (
+        db.query(
+            LigneFacture.sim_id.label("sim_id"),
+            _func.max(FactureTelecom.annee * 100 + FactureTelecom.mois).label("ym"),
+        )
+        .join(FactureTelecom, LigneFacture.facture_id == FactureTelecom.id)
+        .filter(LigneFacture.sim_id.isnot(None))
+        .group_by(LigneFacture.sim_id)
+        .subquery()
+    )
+
+    rows = (
+        db.query(LigneFacture, FactureTelecom)
+        .join(FactureTelecom, LigneFacture.facture_id == FactureTelecom.id)
+        .join(
+            latest_sub,
+            and_(
+                LigneFacture.sim_id == latest_sub.c.sim_id,
+                (FactureTelecom.annee * 100 + FactureTelecom.mois) == latest_sub.c.ym,
+            ),
+        )
+        .all()
+    )
+    return {
+        l.sim_id: {
+            "mois":        f.mois,
+            "annee":       f.annee,
+            "operateur":   f.operateur,
+            "montant_ttc": float(l.montant_ttc) if l.montant_ttc is not None else (float(l.montant) if l.montant is not None else None),
+        }
+        for l, f in rows
+    }
 
 
 @router.get("/sites", response_model=list[SiteGSMOut])
 def list_sites(db: Session = Depends(get_db)):
-    sites   = db.query(SiteGSM).order_by(SiteGSM.nom).all()
-    sim_map = _site_sim_map(db)
-    result  = []
+    sites    = db.query(SiteGSM).order_by(SiteGSM.nom).all()
+    sim_map  = _site_sim_map(db)
+    fact_map = _latest_facture_map(db)
+    result   = []
     for s in sites:
         item = SiteGSMOut.model_validate(s)
-        item.sim_numero = sim_map.get(s.id)
+        sim_info = sim_map.get(s.id)
+        if sim_info:
+            item.sim_numero = sim_info[0]
+            item.derniere_facture = fact_map.get(sim_info[1])
         result.append(item)
     return result
+
+
+@router.get("/sites/{site_id}/facturation")
+def get_site_facturation(site_id: int, db: Session = Depends(get_db)):
+    """Historique mensuel de facturation du SIM actuellement affecté à ce site,
+    reconstitué automatiquement à partir des factures télécom importées."""
+    site = db.query(SiteGSM).filter(SiteGSM.id == site_id).first()
+    if not site:
+        raise HTTPException(404, "Site introuvable")
+
+    aff = (
+        db.query(AffectationSIM)
+        .filter(AffectationSIM.site_id == site_id, AffectationSIM.is_active == True)
+        .first()
+    )
+    if not aff:
+        return {"sim_numero": None, "lignes": []}
+
+    sim = db.query(NumeroSIM).filter(NumeroSIM.id == aff.sim_id).first()
+
+    rows = (
+        db.query(LigneFacture, FactureTelecom)
+        .join(FactureTelecom, LigneFacture.facture_id == FactureTelecom.id)
+        .filter(LigneFacture.sim_id == aff.sim_id)
+        .order_by(FactureTelecom.annee.desc(), FactureTelecom.mois.desc())
+        .all()
+    )
+
+    return {
+        "sim_numero": sim.numero if sim else None,
+        "lignes": [
+            {
+                "mois":      f.mois,
+                "annee":     f.annee,
+                "operateur": f.operateur,
+                "montant":     float(l.montant)     if l.montant     is not None else None,
+                "montant_ttc": float(l.montant_ttc) if l.montant_ttc is not None else None,
+            }
+            for l, f in rows
+        ],
+    }
 
 
 @router.post("/sites", response_model=SiteGSMOut, status_code=201)
@@ -343,7 +428,7 @@ def export_sites(db: Session = Depends(get_db)):
             s.imsi         or "",
             s.nom,
             s.localisation or "",
-            sim_map.get(s.id) or "",
+            (sim_map.get(s.id) or (None,))[0] or "",
         ])
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";")
@@ -384,7 +469,7 @@ def export_sites_excel(
             self.nom         = s.nom
             self.localisation = s.localisation
             self.created_at  = s.created_at
-            self.sim_numero  = sim_map.get(s.id)
+            self.sim_numero  = (sim_map.get(s.id) or (None,))[0]
 
     rows_data = [SiteRow(s) for s in sites]
 
@@ -485,11 +570,19 @@ async def import_sites(file: UploadFile = File(...), db: Session = Depends(get_d
 
     Si la colonne "Numéro" est présente et contient un numéro SIM existant,
     une affectation est créée automatiquement entre ce SIM et le site.
+
+    Le format .xlsx (ex : feuilles "RMS_Orange" / "RMS_Free" du fichier de
+    suivi flotte) est également accepté : les feuilles contenant les colonnes
+    Numéro / IMSI / SITES ID / NOMS SITES sont détectées automatiquement.
     """
     import unicodedata as _ud
     from datetime import date as _date
 
     content = await file.read()
+
+    if (file.filename or "").lower().endswith(".xlsx"):
+        return _import_sites_xlsx(content, db)
+
     try:
         text = content.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -590,6 +683,134 @@ async def import_sites(file: UploadFile = File(...), db: Session = Depends(get_d
     return {
         "created": created, "updated": updated,
         "affecte": affecte, "errors": errors,
+        "total_lignes": created + updated + len(errors),
+    }
+
+
+def _import_sites_xlsx(content: bytes, db: Session):
+    """Import depuis le fichier de suivi flotte (.xlsx) — feuilles
+    'RMS_Orange' / 'RMS_Free' (ou toute feuille contenant les colonnes
+    Numéro / IMSI / SITES ID / NOMS SITES). Crée/maj les sites RMS, les
+    numéros SIM correspondants (catégorie M2M_SITE) et leur affectation."""
+    import io, re, unicodedata
+    from datetime import date as _date
+    from openpyxl import load_workbook
+
+    def norm(s) -> str:
+        s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode()
+        return re.sub(r"[^A-Z0-9]", "", s.upper())
+
+    try:
+        wb = load_workbook(io.BytesIO(content), data_only=True)
+    except Exception:
+        raise HTTPException(400, "Fichier Excel illisible.")
+
+    created, updated, affecte, sims_crees, errors = 0, 0, 0, 0, []
+
+    for ws in wb.worksheets:
+        sheet_norm = norm(ws.title)
+        operateur = "Orange" if "ORANGE" in sheet_norm else "Free" if "FREE" in sheet_norm else None
+
+        # Repérer la ligne d'en-tête (celle qui contient "NOMS SITES")
+        header_row_idx, headers = None, {}
+        for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=4, values_only=True), start=1):
+            normalized = [norm(v) if v is not None else "" for v in row]
+            if "NOMSSITES" in normalized or "NOMSITE" in normalized:
+                header_row_idx = r_idx
+                headers = {h: c for c, h in enumerate(normalized) if h}
+                break
+        if header_row_idx is None:
+            continue  # feuille non concernée (ex : "Equipes pointage", "Feuil1"…)
+
+        def col(row, *names):
+            for name in names:
+                idx = headers.get(name)
+                if idx is not None and idx < len(row):
+                    v = row[idx]
+                    if isinstance(v, str):
+                        v = v.strip()
+                    if v not in (None, ""):
+                        return v
+            return None
+
+        for i, row in enumerate(ws.iter_rows(min_row=header_row_idx + 1, values_only=True), start=header_row_idx + 1):
+            if all(v is None for v in row):
+                continue
+
+            nom = col(row, "NOMSSITES", "NOMSITE", "NOM")
+            if not nom:
+                continue
+            nom = str(nom).strip()
+
+            code_site = col(row, "SITESID", "SITEID", "CODESITE")
+            code_site = str(code_site).strip() if code_site is not None else None
+
+            imsi_val = col(row, "IMSI")
+            imsi = str(int(imsi_val)) if isinstance(imsi_val, float) else (str(imsi_val).strip() if imsi_val is not None else None)
+
+            num_val = col(row, "NUMERO", "NUM")
+            sim_numero = str(int(num_val)) if isinstance(num_val, float) else (str(num_val).strip() if num_val is not None else None)
+
+            # ── Créer ou mettre à jour le site ──────────────────────────────────
+            existing = (
+                db.query(SiteGSM).filter(SiteGSM.code_site == code_site).first()
+                if code_site else None
+            ) or db.query(SiteGSM).filter(SiteGSM.nom == nom).first()
+
+            if existing:
+                if code_site: existing.code_site = code_site
+                if imsi:       existing.imsi      = imsi
+                site_obj = existing
+                updated += 1
+            else:
+                site_obj = SiteGSM(nom=nom, code_site=code_site, imsi=imsi)
+                db.add(site_obj)
+                db.flush()
+                created += 1
+
+            # ── Créer le numéro SIM si besoin, puis l'affecter au site ──────────
+            if sim_numero:
+                sim_obj = db.query(NumeroSIM).filter(NumeroSIM.numero == sim_numero).first()
+                if not sim_obj:
+                    sim_obj = NumeroSIM(
+                        numero=sim_numero, imsi=imsi,
+                        categorie=CategorieSimEnum.M2M_SITE,
+                        operateur=operateur,
+                    )
+                    db.add(sim_obj)
+                    db.flush()
+                    sims_crees += 1
+                else:
+                    if operateur and not sim_obj.operateur:
+                        sim_obj.operateur = operateur
+                    if imsi and not sim_obj.imsi:
+                        sim_obj.imsi = imsi
+
+                existing_aff = db.query(AffectationSIM).filter(
+                    AffectationSIM.site_id == site_obj.id,
+                    AffectationSIM.is_active == True,
+                ).first()
+                if not existing_aff:
+                    old_aff = db.query(AffectationSIM).filter(
+                        AffectationSIM.sim_id == sim_obj.id,
+                        AffectationSIM.is_active == True,
+                    ).first()
+                    if old_aff:
+                        old_aff.is_active = False
+                        old_aff.date_fin  = _date.today()
+
+                    db.add(AffectationSIM(
+                        sim_id     = sim_obj.id,
+                        site_id    = site_obj.id,
+                        date_debut = _date.today(),
+                        is_active  = True,
+                    ))
+                    affecte += 1
+
+    db.commit()
+    return {
+        "created": created, "updated": updated,
+        "affecte": affecte, "sims_crees": sims_crees, "errors": errors,
         "total_lignes": created + updated + len(errors),
     }
 
