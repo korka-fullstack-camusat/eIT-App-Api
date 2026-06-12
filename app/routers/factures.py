@@ -10,7 +10,7 @@ import unicodedata
 import pandas as pd
 from ..database import get_db
 from ..models.facture import FactureTelecom, LigneFacture
-from ..models.telephonie import NumeroSIM
+from ..models.telephonie import NumeroSIM, CategorieSimEnum
 from ..schemas.facture import FactureOut, ImportResult
 from ..models.user import User
 from ..services.auth_service import require_editor
@@ -449,6 +449,22 @@ async def import_facture(
         montant = montant_ttc if montant_ttc is not None else Decimal("0")
 
         sim_id = sims_map.get(numero_raw)
+
+        # Les lignes "MOBILE" correspondent à des numéros employés : si le
+        # numéro n'est pas encore connu, on crée automatiquement la fiche
+        # NumeroSIM (catégorie EMPLOYE) correspondante pour qu'elle apparaisse
+        # sur /sims.
+        if not sim_id and ld.get("type_ligne") == "MOBILE":
+            new_sim = NumeroSIM(
+                numero=numero_raw,
+                categorie=CategorieSimEnum.EMPLOYE,
+                operateur=operateur,
+            )
+            db.add(new_sim)
+            db.flush()
+            sim_id = new_sim.id
+            sims_map[numero_raw] = sim_id
+
         non_reconnu = "N" if sim_id else "O"
         if sim_id:
             reconnus += 1

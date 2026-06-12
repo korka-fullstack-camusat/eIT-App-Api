@@ -40,6 +40,7 @@ class Vehicule(Base):
     marque         = Column(String(100), nullable=True)
     modele         = Column(String(100), nullable=True)
     imsi           = Column(String(20),  nullable=True)
+    imei           = Column(String(30),  nullable=True)
     affectation    = Column(String(200), nullable=True)
     created_at     = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -56,6 +57,12 @@ class NumeroSIM(Base):
     statut      = Column(Enum(StatutSimEnum), default=StatutSimEnum.ACTIVE, index=True)
     operateur   = Column(String(50), nullable=True)
     description = Column(Text, nullable=True)
+    matricule     = Column(String(50), nullable=True)
+    beneficiaire  = Column(String(150), nullable=True)
+    service       = Column(String(100), nullable=True)
+    business_line = Column(String(50), nullable=True)
+    fonction      = Column(String(150), nullable=True)
+    forfait       = Column(Numeric(10, 2), nullable=True)
     created_at  = Column(DateTime(timezone=True), server_default=func.now())
     updated_at  = Column(DateTime(timezone=True), onupdate=func.now())
 
@@ -75,6 +82,16 @@ class NumeroSIM(Base):
         overlaps="affectations",
     )
     lignes_facture    = relationship("LigneFacture", back_populates="sim")
+
+
+class ImportGlobalLog(Base):
+    __tablename__ = "import_global_logs"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    nom_fichier  = Column(String(255), nullable=True)
+    utilisateur  = Column(String(150), nullable=True)
+    resultat     = Column(Text, nullable=True)  # JSON sérialisé du résumé d'import
+    created_at   = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class AffectationSIM(Base):

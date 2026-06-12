@@ -5,7 +5,7 @@ Crée les tables et l'utilisateur admin par défaut.
 import time
 import sqlalchemy
 from app.database import Base, engine, SessionLocal
-from app.models import Materiel, Attribution, NumeroSIM, SiteGSM, Vehicule, AffectationSIM, FactureTelecom, LigneFacture, User
+from app.models import Materiel, Attribution, NumeroSIM, SiteGSM, Vehicule, AffectationSIM, FactureTelecom, LigneFacture, User, ImportGlobalLog
 from app.services.auth_service import hash_password
 
 print("→ Attente de la base de données...")
@@ -77,6 +77,15 @@ with engine.connect() as conn:
         "ALTER TABLE materiels ADD COLUMN IF NOT EXISTS beneficiaire_nom VARCHAR(100)",
         "ALTER TABLE materiels ADD COLUMN IF NOT EXISTS beneficiaire_prenom VARCHAR(100)",
         "ALTER TABLE materiels DROP COLUMN IF EXISTS remarque",
+        # Informations d'affectation (issues du fichier de suivi ORANGE-mobiles) pour les SIM employés
+        "ALTER TABLE numeros_sim ADD COLUMN IF NOT EXISTS matricule VARCHAR(50)",
+        "ALTER TABLE numeros_sim ADD COLUMN IF NOT EXISTS beneficiaire VARCHAR(150)",
+        "ALTER TABLE numeros_sim ADD COLUMN IF NOT EXISTS service VARCHAR(100)",
+        "ALTER TABLE numeros_sim ADD COLUMN IF NOT EXISTS business_line VARCHAR(50)",
+        "ALTER TABLE numeros_sim ADD COLUMN IF NOT EXISTS fonction VARCHAR(150)",
+        # Informations issues du fichier de suivi ORANGE-Gps_Vehicules pour les SIM M2M véhicules
+        "ALTER TABLE numeros_sim ADD COLUMN IF NOT EXISTS forfait NUMERIC(10,2)",
+        "ALTER TABLE vehicules ADD COLUMN IF NOT EXISTS imei VARCHAR(30)",
     ]
     for sql in migrations:
         try:

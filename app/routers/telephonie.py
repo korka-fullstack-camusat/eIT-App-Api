@@ -5,7 +5,7 @@ from typing import Optional
 from datetime import date
 import csv, io
 from ..database import get_db
-from ..models.telephonie import NumeroSIM, SiteGSM, Vehicule, AffectationSIM, CategorieSimEnum, StatutSimEnum
+from ..models.telephonie import NumeroSIM, SiteGSM, Vehicule, AffectationSIM, CategorieSimEnum, StatutSimEnum, ImportGlobalLog
 from ..models.facture import FactureTelecom, LigneFacture
 from sqlalchemy import and_
 from ..schemas.telephonie import (
@@ -13,6 +13,7 @@ from ..schemas.telephonie import (
     SiteGSMCreate, SiteGSMOut,
     VehiculeCreate, VehiculeOut,
     AffectationSIMCreate, AffectationSIMOut, DesaffectationSIMIn,
+    ImportGlobalLogOut,
 )
 from ..models.user import User
 from ..services.auth_service import require_editor
@@ -32,7 +33,16 @@ def list_sims(
     if categorie: q = q.filter(NumeroSIM.categorie == categorie)
     if statut:    q = q.filter(NumeroSIM.statut == statut)
     if search:    q = q.filter(NumeroSIM.numero.ilike(f"%{search}%"))
-    return q.order_by(NumeroSIM.numero).all()
+    sims = q.order_by(NumeroSIM.numero).all()
+
+    type_ligne = "MOBILE" if categorie == CategorieSimEnum.EMPLOYE else None
+    fact_map = _latest_facture_map(db, type_ligne=type_ligne)
+    result = []
+    for s in sims:
+        item = NumeroSIMOut.model_validate(s)
+        item.derniere_facture = fact_map.get(s.id)
+        result.append(item)
+    return result
 
 
 @router.post("/sims", response_model=NumeroSIMOut, status_code=201)
@@ -114,6 +124,11 @@ def export_sims_excel(
     ALL_COLS = [
         ("numero",    "Numéro",          lambda s, a: s.numero or ""),
         ("imsi",      "IMSI",            lambda s, a: s.imsi or ""),
+        ("sim_matricule", "Matricule",   lambda s, a: s.matricule or ""),
+        ("beneficiaire",  "Bénéficiaire",lambda s, a: s.beneficiaire or ""),
+        ("service",       "Service",     lambda s, a: s.service or ""),
+        ("business_line", "BL",          lambda s, a: s.business_line or ""),
+        ("fonction",      "Fonction",    lambda s, a: s.fonction or ""),
         ("categorie", "Catégorie",       lambda s, a: CAT_LABELS.get(s.categorie, s.categorie or "")),
         ("operateur", "Opérateur",       lambda s, a: s.operateur or ""),
         ("statut",    "Statut",          lambda s, a: STAT_LABELS.get(s.statut, s.statut or "")),
@@ -301,9 +316,9 @@ def historique_sim(sim_id: int, db: Session = Depends(get_db)):
 # ── Sites GSM ─────────────────────────────────────────────────────────────────
 
 def _site_sim_map(db: Session) -> dict:
-    """Retourne un dict {site_id: (sim_numero, sim_id)} pour toutes les affectations actives."""
+    """Retourne un dict {site_id: (sim_numero, sim_id, operateur)} pour toutes les affectations actives."""
     rows = (
-        db.query(AffectationSIM.site_id, NumeroSIM.numero, NumeroSIM.id)
+        db.query(AffectationSIM.site_id, NumeroSIM.numero, NumeroSIM.id, NumeroSIM.operateur)
         .join(NumeroSIM, NumeroSIM.id == AffectationSIM.sim_id)
         .filter(
             AffectationSIM.is_active == True,
@@ -311,13 +326,21 @@ def _site_sim_map(db: Session) -> dict:
         )
         .all()
     )
-    return {r.site_id: (r.numero, r.id) for r in rows}
+    return {r.site_id: (r.numero, r.id, r.operateur) for r in rows}
 
 
-def _latest_facture_map(db: Session) -> dict:
+def _latest_facture_map(db: Session, type_ligne: Optional[str] = None) -> dict:
     """Retourne un dict {sim_id: {mois, annee, operateur, montant_ttc}} correspondant
-    à la facture la plus récente (mois/année) reconnue pour chaque numéro SIM."""
+    à la facture la plus récente (mois/année) reconnue pour chaque numéro SIM.
+
+    Si `type_ligne` est fourni, ne considère que les lignes de facture dont le
+    `type_ligne` correspond (ex: "MOBILE" pour les numéros employés)."""
     from sqlalchemy import func as _func
+
+    base = db.query(LigneFacture).filter(LigneFacture.sim_id.isnot(None))
+    if type_ligne:
+        base = base.filter(LigneFacture.type_ligne == type_ligne)
+    base_ids = base.with_entities(LigneFacture.id).subquery()
 
     latest_sub = (
         db.query(
@@ -325,12 +348,12 @@ def _latest_facture_map(db: Session) -> dict:
             _func.max(FactureTelecom.annee * 100 + FactureTelecom.mois).label("ym"),
         )
         .join(FactureTelecom, LigneFacture.facture_id == FactureTelecom.id)
-        .filter(LigneFacture.sim_id.isnot(None))
+        .filter(LigneFacture.id.in_(base_ids))
         .group_by(LigneFacture.sim_id)
         .subquery()
     )
 
-    rows = (
+    q = (
         db.query(LigneFacture, FactureTelecom)
         .join(FactureTelecom, LigneFacture.facture_id == FactureTelecom.id)
         .join(
@@ -340,8 +363,10 @@ def _latest_facture_map(db: Session) -> dict:
                 (FactureTelecom.annee * 100 + FactureTelecom.mois) == latest_sub.c.ym,
             ),
         )
-        .all()
     )
+    if type_ligne:
+        q = q.filter(LigneFacture.type_ligne == type_ligne)
+    rows = q.all()
     return {
         l.sim_id: {
             "mois":        f.mois,
@@ -364,8 +389,183 @@ def list_sites(db: Session = Depends(get_db)):
         sim_info = sim_map.get(s.id)
         if sim_info:
             item.sim_numero = sim_info[0]
+            item.sim_operateur = sim_info[2]
             item.derniere_facture = fact_map.get(sim_info[1])
         result.append(item)
+    return result
+
+
+def _sims_total_for_period(db: Session, mois: int, annee: int, categorie: Optional[CategorieSimEnum] = None) -> dict:
+    """Coût total facturé pour les numéros SIM (toutes catégories, ou une
+    catégorie donnée), pour un mois/année donné(e)."""
+    from sqlalchemy import func as _func
+
+    montant_expr = _func.coalesce(LigneFacture.montant_ttc, LigneFacture.montant)
+    q = (
+        db.query(
+            _func.coalesce(_func.sum(montant_expr), 0),
+            _func.count(LigneFacture.id),
+        )
+        .join(FactureTelecom, LigneFacture.facture_id == FactureTelecom.id)
+        .join(NumeroSIM, NumeroSIM.id == LigneFacture.sim_id)
+        .filter(FactureTelecom.mois == mois, FactureTelecom.annee == annee)
+    )
+    if categorie:
+        q = q.filter(NumeroSIM.categorie == categorie)
+    total, nb = q.first()
+    return {"mois": mois, "annee": annee, "total": float(total or 0), "nombre_numeros": int(nb or 0)}
+
+
+@router.get("/sims/stats/periodes")
+def sims_stats_periodes(categorie: Optional[CategorieSimEnum] = None, db: Session = Depends(get_db)):
+    """Liste des mois/années pour lesquels une facture contient au moins un
+    numéro SIM (toutes catégories, ou une catégorie donnée)."""
+    q = (
+        db.query(FactureTelecom.annee, FactureTelecom.mois)
+        .join(LigneFacture, LigneFacture.facture_id == FactureTelecom.id)
+        .join(NumeroSIM, NumeroSIM.id == LigneFacture.sim_id)
+    )
+    if categorie:
+        q = q.filter(NumeroSIM.categorie == categorie)
+    rows = q.distinct().order_by(FactureTelecom.annee.desc(), FactureTelecom.mois.desc()).all()
+    return [{"mois": r.mois, "annee": r.annee} for r in rows]
+
+
+@router.get("/sims/stats/mensuel")
+def sims_stats_mensuel(mois: int, annee: int, categorie: Optional[CategorieSimEnum] = None, db: Session = Depends(get_db)):
+    """Coût total des numéros SIM pour un mois/année donné(e)."""
+    return _sims_total_for_period(db, mois, annee, categorie)
+
+
+@router.get("/sims/stats/ecart")
+def sims_stats_ecart(
+    mois1: int, annee1: int, mois2: int, annee2: int,
+    categorie: Optional[CategorieSimEnum] = None, db: Session = Depends(get_db),
+):
+    """Écart de coût total des numéros SIM entre deux mois/années."""
+    p1 = _sims_total_for_period(db, mois1, annee1, categorie)
+    p2 = _sims_total_for_period(db, mois2, annee2, categorie)
+    ecart = p2["total"] - p1["total"]
+    ecart_pct = (ecart / p1["total"] * 100) if p1["total"] else None
+    return {"periode1": p1, "periode2": p2, "ecart": ecart, "ecart_pct": ecart_pct}
+
+
+@router.get("/sims/stats/evolution")
+def sims_stats_evolution(categorie: Optional[CategorieSimEnum] = None, db: Session = Depends(get_db)):
+    """Évolution du coût total des numéros SIM mois par mois, avec l'écart
+    (valeur et %) par rapport au mois précédent, pour toutes les périodes
+    disponibles."""
+    q = (
+        db.query(FactureTelecom.mois, FactureTelecom.annee)
+        .join(LigneFacture, LigneFacture.facture_id == FactureTelecom.id)
+        .join(NumeroSIM, NumeroSIM.id == LigneFacture.sim_id)
+    )
+    if categorie:
+        q = q.filter(NumeroSIM.categorie == categorie)
+    rows = q.distinct().all()
+    periodes = sorted(set((r.annee, r.mois) for r in rows))
+
+    result = []
+    prev_total = None
+    for annee, mois in periodes:
+        p = _sims_total_for_period(db, mois, annee, categorie)
+        if prev_total is not None:
+            ecart = p["total"] - prev_total
+            ecart_pct = (ecart / prev_total * 100) if prev_total else None
+        else:
+            ecart = None
+            ecart_pct = None
+        result.append({**p, "ecart": ecart, "ecart_pct": ecart_pct})
+        prev_total = p["total"]
+    return result
+
+
+def _sites_total_for_period(db: Session, mois: int, annee: int) -> dict:
+    """Coût total facturé pour les numéros SIM des sites RMS (catégorie
+    M2M_SITE), pour un mois/année donné(e)."""
+    from sqlalchemy import func as _func
+
+    montant_expr = _func.coalesce(LigneFacture.montant_ttc, LigneFacture.montant)
+    row = (
+        db.query(
+            _func.coalesce(_func.sum(montant_expr), 0),
+            _func.count(LigneFacture.id),
+        )
+        .join(FactureTelecom, LigneFacture.facture_id == FactureTelecom.id)
+        .join(NumeroSIM, NumeroSIM.id == LigneFacture.sim_id)
+        .filter(
+            FactureTelecom.mois  == mois,
+            FactureTelecom.annee == annee,
+            NumeroSIM.categorie  == CategorieSimEnum.M2M_SITE,
+        )
+        .first()
+    )
+    total, nb = row
+    return {"mois": mois, "annee": annee, "total": float(total or 0), "nombre_numeros": int(nb or 0)}
+
+
+@router.get("/sites/stats/periodes")
+def sites_stats_periodes(db: Session = Depends(get_db)):
+    """Liste des mois/années pour lesquels une facture contient au moins un
+    numéro SIM de site RMS (catégorie M2M_SITE) — pour alimenter les sélecteurs
+    de période des statistiques."""
+    rows = (
+        db.query(FactureTelecom.annee, FactureTelecom.mois)
+        .join(LigneFacture, LigneFacture.facture_id == FactureTelecom.id)
+        .join(NumeroSIM, NumeroSIM.id == LigneFacture.sim_id)
+        .filter(NumeroSIM.categorie == CategorieSimEnum.M2M_SITE)
+        .distinct()
+        .order_by(FactureTelecom.annee.desc(), FactureTelecom.mois.desc())
+        .all()
+    )
+    return [{"mois": r.mois, "annee": r.annee} for r in rows]
+
+
+@router.get("/sites/stats/mensuel")
+def sites_stats_mensuel(mois: int, annee: int, db: Session = Depends(get_db)):
+    """Coût total des sites RMS pour un mois/année donné(e)."""
+    return _sites_total_for_period(db, mois, annee)
+
+
+@router.get("/sites/stats/ecart")
+def sites_stats_ecart(
+    mois1: int, annee1: int, mois2: int, annee2: int, db: Session = Depends(get_db),
+):
+    """Écart de coût total des sites RMS entre deux mois/années."""
+    p1 = _sites_total_for_period(db, mois1, annee1)
+    p2 = _sites_total_for_period(db, mois2, annee2)
+    ecart = p2["total"] - p1["total"]
+    ecart_pct = (ecart / p1["total"] * 100) if p1["total"] else None
+    return {"periode1": p1, "periode2": p2, "ecart": ecart, "ecart_pct": ecart_pct}
+
+
+@router.get("/sites/stats/evolution")
+def sites_stats_evolution(db: Session = Depends(get_db)):
+    """Évolution du coût total des sites RMS mois par mois, avec l'écart
+    (valeur et %) par rapport au mois précédent, pour toutes les périodes
+    disponibles."""
+    rows = (
+        db.query(FactureTelecom.mois, FactureTelecom.annee)
+        .join(LigneFacture, LigneFacture.facture_id == FactureTelecom.id)
+        .join(NumeroSIM, NumeroSIM.id == LigneFacture.sim_id)
+        .filter(NumeroSIM.categorie == CategorieSimEnum.M2M_SITE)
+        .distinct()
+        .all()
+    )
+    periodes = sorted(set((r.annee, r.mois) for r in rows))
+
+    result = []
+    prev_total = None
+    for annee, mois in periodes:
+        p = _sites_total_for_period(db, mois, annee)
+        if prev_total is not None:
+            ecart = p["total"] - prev_total
+            ecart_pct = (ecart / prev_total * 100) if prev_total else None
+        else:
+            ecart = None
+            ecart_pct = None
+        result.append({**p, "ecart": ecart, "ecart_pct": ecart_pct})
+        prev_total = p["total"]
     return result
 
 
@@ -807,12 +1007,298 @@ def _import_sites_xlsx(content: bytes, db: Session):
                     ))
                     affecte += 1
 
+    relinked = _relink_lignes_facture(db)
+
     db.commit()
     return {
         "created": created, "updated": updated,
-        "affecte": affecte, "sims_crees": sims_crees, "errors": errors,
+        "affecte": affecte, "sims_crees": sims_crees, "relinked": relinked, "errors": errors,
         "total_lignes": created + updated + len(errors),
     }
+
+
+def _import_mobiles_xlsx(content: bytes, db: Session):
+    """Import depuis la feuille 'ORANGE-mobiles' du fichier de suivi flotte
+    (.xlsx) — crée/met à jour les numéros SIM employés (catégorie EMPLOYE)
+    avec matricule / bénéficiaire / service / business line / fonction, et
+    crée l'affectation employé correspondante si elle n'existe pas déjà.
+    La partie facturation (colonnes mensuelles) n'est PAS traitée ici."""
+    import io, re, unicodedata
+    from datetime import date as _date
+    from openpyxl import load_workbook
+
+    def norm(s) -> str:
+        s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode()
+        return re.sub(r"[^A-Z0-9]", "", s.upper())
+
+    try:
+        wb = load_workbook(io.BytesIO(content), data_only=True)
+    except Exception:
+        raise HTTPException(400, "Fichier Excel illisible.")
+
+    created, updated, affecte, errors = 0, 0, 0, []
+
+    if "ORANGE-mobiles" not in wb.sheetnames:
+        return {"created": 0, "updated": 0, "affecte": 0, "errors": []}
+
+    ws = wb["ORANGE-mobiles"]
+
+    # Repérer la ligne d'en-tête (celle qui contient "MATRICULE" et "BENEFICIAIRE")
+    header_row_idx = None
+    for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=5, values_only=True), start=1):
+        normalized = [norm(v) if v is not None else "" for v in row]
+        if "MATRICULE" in normalized and "BENEFICIAIRE" in normalized:
+            header_row_idx = r_idx
+            break
+    if header_row_idx is None:
+        return {"created": 0, "updated": 0, "affecte": 0, "errors": ["Feuille ORANGE-mobiles : en-tête introuvable"]}
+
+    for i, row in enumerate(ws.iter_rows(min_row=header_row_idx + 1, values_only=True), start=header_row_idx + 1):
+        if all(v is None for v in row):
+            continue
+
+        matricule     = row[0] if len(row) > 0 else None
+        beneficiaire  = row[1] if len(row) > 1 else None
+        service       = row[2] if len(row) > 2 else None
+        business_line = row[3] if len(row) > 3 else None
+        fonction      = row[4] if len(row) > 4 else None
+        numero_val    = row[5] if len(row) > 5 else None
+
+        if numero_val is None:
+            continue
+        numero = str(int(numero_val)) if isinstance(numero_val, (int, float)) else str(numero_val).strip()
+        numero = re.sub(r"\D", "", numero)
+        if not numero:
+            continue
+
+        matricule_s     = str(matricule).strip()     if matricule     not in (None, "") else None
+        beneficiaire_s  = str(beneficiaire).strip()   if beneficiaire  not in (None, "") else None
+        service_s       = str(service).strip()        if service       not in (None, "") else None
+        business_line_s = str(business_line).strip()  if business_line not in (None, "") else None
+        fonction_s      = str(fonction).strip()        if fonction      not in (None, "") else None
+
+        sim_obj = db.query(NumeroSIM).filter(NumeroSIM.numero == numero).first()
+        if sim_obj:
+            if matricule_s:     sim_obj.matricule     = matricule_s
+            if beneficiaire_s:  sim_obj.beneficiaire  = beneficiaire_s
+            if service_s:       sim_obj.service       = service_s
+            if business_line_s: sim_obj.business_line = business_line_s
+            if fonction_s:      sim_obj.fonction      = fonction_s
+            updated += 1
+        else:
+            sim_obj = NumeroSIM(
+                numero=numero, categorie=CategorieSimEnum.EMPLOYE, statut=StatutSimEnum.ACTIVE,
+                matricule=matricule_s, beneficiaire=beneficiaire_s, service=service_s,
+                business_line=business_line_s, fonction=fonction_s,
+            )
+            db.add(sim_obj)
+            db.flush()
+            created += 1
+
+        # ── Auto-affectation employé ────────────────────────────────────────
+        if beneficiaire_s:
+            existing_aff = db.query(AffectationSIM).filter(
+                AffectationSIM.sim_id == sim_obj.id,
+                AffectationSIM.is_active == True,
+            ).first()
+            if not existing_aff:
+                db.add(AffectationSIM(
+                    sim_id=sim_obj.id,
+                    date_debut=_date.today(),
+                    is_active=True,
+                    employee_nom=beneficiaire_s,
+                    employee_matricule=matricule_s,
+                    notes="Importé depuis SUIVI FLOTTE CAMUSAT (ORANGE-mobiles)",
+                ))
+                affecte += 1
+
+    db.commit()
+    return {"created": created, "updated": updated, "affecte": affecte, "errors": errors}
+
+
+def _import_gps_vehicules_xlsx(content: bytes, db: Session):
+    """Import depuis la feuille 'ORANGE-Gps_Vehicules' du fichier de suivi
+    flotte (.xlsx) — crée/met à jour les numéros SIM M2M véhicule (forfait),
+    les véhicules (modèle / IMEI) et leur affectation. Ignore les lignes
+    'Non affecté', les IMEI '#N/A', les lignes de test ('AA TEST...') et la
+    ligne 'TOTAL'. La partie facturation (colonnes mensuelles) n'est PAS
+    traitée ici."""
+    import io, re, unicodedata
+    from datetime import date as _date
+    from openpyxl import load_workbook
+
+    def norm(s) -> str:
+        s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode()
+        return re.sub(r"[^A-Z0-9]", "", s.upper())
+
+    try:
+        wb = load_workbook(io.BytesIO(content), data_only=True)
+    except Exception:
+        raise HTTPException(400, "Fichier Excel illisible.")
+
+    created_sim, updated_sim, created_veh, updated_veh, affecte, errors = 0, 0, 0, 0, 0, []
+
+    if "ORANGE-Gps_Vehicules" not in wb.sheetnames:
+        return {"created_sim": 0, "updated_sim": 0, "created_vehicule": 0, "updated_vehicule": 0, "affecte": 0, "errors": []}
+
+    ws = wb["ORANGE-Gps_Vehicules"]
+
+    # Repérer la ligne d'en-tête (celle qui contient "N°SIM" / "NSIM")
+    header_row_idx = None
+    for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=5, values_only=True), start=1):
+        normalized = [norm(v) if v is not None else "" for v in row]
+        if "NSIM" in normalized:
+            header_row_idx = r_idx
+            break
+    if header_row_idx is None:
+        return {"created_sim": 0, "updated_sim": 0, "created_vehicule": 0, "updated_vehicule": 0, "affecte": 0,
+                "errors": ["Feuille ORANGE-Gps_Vehicules : en-tête introuvable"]}
+
+    for i, row in enumerate(ws.iter_rows(min_row=header_row_idx + 1, values_only=True), start=header_row_idx + 1):
+        numero_val = row[0] if len(row) > 0 else None
+        if numero_val is None:
+            continue
+        numero = str(int(numero_val)) if isinstance(numero_val, (int, float)) else str(numero_val).strip()
+        numero = re.sub(r"\D", "", numero)
+        if not numero:
+            continue  # ignore "TOTAL", lignes d'en-tête répétées, etc.
+
+        immat   = row[1] if len(row) > 1 else None
+        modele  = row[2] if len(row) > 2 else None
+        imei    = row[3] if len(row) > 3 else None
+        forfait = row[4] if len(row) > 4 else None
+
+        immat_s  = str(immat).strip()  if immat  not in (None, "") else None
+        modele_s = str(modele).strip() if modele not in (None, "") else None
+        imei_s   = str(imei).strip()   if imei   not in (None, "") else None
+        if imei_s and norm(imei_s) in ("NA", "#NA"):
+            imei_s = None
+        forfait_v = float(forfait) if isinstance(forfait, (int, float)) else None
+
+        # Lignes de test à ignorer
+        if immat_s and norm(immat_s).startswith("AATEST"):
+            continue
+
+        sim_obj = db.query(NumeroSIM).filter(NumeroSIM.numero == numero).first()
+        if sim_obj:
+            if forfait_v is not None:
+                sim_obj.forfait = forfait_v
+            updated_sim += 1
+        else:
+            sim_obj = NumeroSIM(
+                numero=numero, categorie=CategorieSimEnum.M2M_VEHICULE, statut=StatutSimEnum.ACTIVE,
+                forfait=forfait_v,
+            )
+            db.add(sim_obj)
+            db.flush()
+            created_sim += 1
+
+        # ── Véhicule + affectation ───────────────────────────────────────────
+        if immat_s and norm(immat_s) != "NONAFFECTE":
+            veh_obj = db.query(Vehicule).filter(Vehicule.immatriculation == immat_s).first()
+            if veh_obj:
+                if modele_s: veh_obj.modele = modele_s
+                if imei_s:   veh_obj.imei   = imei_s
+                updated_veh += 1
+            else:
+                veh_obj = Vehicule(immatriculation=immat_s, modele=modele_s, imei=imei_s)
+                db.add(veh_obj)
+                db.flush()
+                created_veh += 1
+
+            existing_aff = db.query(AffectationSIM).filter(
+                AffectationSIM.sim_id == sim_obj.id,
+                AffectationSIM.is_active == True,
+            ).first()
+            if not existing_aff:
+                db.add(AffectationSIM(
+                    sim_id=sim_obj.id,
+                    vehicule_id=veh_obj.id,
+                    date_debut=_date.today(),
+                    is_active=True,
+                    notes="Importé depuis SUIVI FLOTTE CAMUSAT (ORANGE-Gps_Vehicules)",
+                ))
+                affecte += 1
+
+    db.commit()
+    return {
+        "created_sim": created_sim, "updated_sim": updated_sim,
+        "created_vehicule": created_veh, "updated_vehicule": updated_veh,
+        "affecte": affecte, "errors": errors,
+    }
+
+
+@router.post("/import-global")
+async def import_global(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
+    """Import global depuis le fichier de suivi flotte CAMUSAT (.xlsx unique) :
+    remplit automatiquement les numéros SIM employés (feuille
+    'ORANGE-mobiles'), les véhicules M2M (feuille 'ORANGE-Gps_Vehicules') et
+    les sites RMS (feuilles 'RMS_Orange' / 'RMS_Free'), ainsi que leurs
+    affectations respectives.
+
+    La partie facturation (colonnes mensuelles des feuilles, ainsi que
+    l'import des factures opérateur) n'est PAS traitée par cette route :
+    elle reste gérée séparément via la page Factures.
+    """
+    if not (file.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(400, "Le fichier doit être au format Excel (.xlsx)")
+
+    content = await file.read()
+
+    result = {
+        "employes":  _import_mobiles_xlsx(content, db),
+        "vehicules": _import_gps_vehicules_xlsx(content, db),
+        "sites":     _import_sites_xlsx(content, db),
+    }
+
+    import json
+    db.add(ImportGlobalLog(
+        nom_fichier=file.filename,
+        utilisateur=getattr(_, "full_name", None) or getattr(_, "username", None),
+        resultat=json.dumps(result),
+    ))
+    db.commit()
+
+    return result
+
+
+@router.get("/import-global/historique", response_model=list[ImportGlobalLogOut])
+def historique_import_global(db: Session = Depends(get_db)):
+    return (
+        db.query(ImportGlobalLog)
+        .order_by(ImportGlobalLog.created_at.desc())
+        .limit(50)
+        .all()
+    )
+
+
+def _relink_lignes_facture(db: Session) -> int:
+    """Relie les lignes de factures dont le numéro (numero_raw) correspond
+    désormais à un numéro SIM connu mais qui n'avaient pas encore de sim_id
+    (ex : la facture a été importée avant que le numéro SIM n'existe).
+    Retourne le nombre de lignes mises à jour (commit non inclus)."""
+    sim_by_numero = {n: sid for n, sid in db.query(NumeroSIM.numero, NumeroSIM.id).all()}
+    if not sim_by_numero:
+        return 0
+
+    unmatched = db.query(LigneFacture).filter(LigneFacture.sim_id.is_(None)).all()
+    count = 0
+    for l in unmatched:
+        sid = sim_by_numero.get(l.numero_raw)
+        if sid:
+            l.sim_id = sid
+            l.non_reconnu = "N"
+            count += 1
+    return count
+
+
+@router.post("/sites/relink-factures")
+def relink_factures(db: Session = Depends(get_db), _: User = Depends(require_editor)):
+    """Relance la liaison numéro SIM ↔ lignes de factures (utile après un
+    import de sites qui crée de nouveaux numéros SIM)."""
+    count = _relink_lignes_facture(db)
+    db.commit()
+    return {"relinked": count}
 
 
 @router.patch("/sites/{site_id}", response_model=SiteGSMOut)
@@ -835,9 +1321,11 @@ def delete_site(site_id: int, db: Session = Depends(get_db), _: User = Depends(r
 # ── Véhicules ─────────────────────────────────────────────────────────────────
 
 def _vehicule_sim_map(db: Session) -> dict:
-    """Retourne un dict {vehicule_id: sim_numero} pour toutes les affectations actives."""
+    """Retourne un dict {vehicule_id: (sim_numero, sim_id, operateur, statut, forfait)}
+    pour toutes les affectations actives."""
     rows = (
-        db.query(AffectationSIM.vehicule_id, NumeroSIM.numero)
+        db.query(AffectationSIM.vehicule_id, NumeroSIM.numero, NumeroSIM.id,
+                 NumeroSIM.operateur, NumeroSIM.statut, NumeroSIM.forfait)
         .join(NumeroSIM, NumeroSIM.id == AffectationSIM.sim_id)
         .filter(
             AffectationSIM.is_active == True,
@@ -845,17 +1333,24 @@ def _vehicule_sim_map(db: Session) -> dict:
         )
         .all()
     )
-    return {r.vehicule_id: r.numero for r in rows}
+    return {r.vehicule_id: (r.numero, r.id, r.operateur, r.statut, r.forfait) for r in rows}
 
 
 @router.get("/vehicules", response_model=list[VehiculeOut])
 def list_vehicules(db: Session = Depends(get_db)):
     vehicules = db.query(Vehicule).order_by(Vehicule.immatriculation).all()
     sim_map   = _vehicule_sim_map(db)
+    fact_map  = _latest_facture_map(db, type_ligne="GPS")
     result = []
     for v in vehicules:
         item = VehiculeOut.model_validate(v)
-        item.sim_numero = sim_map.get(v.id)
+        sim_info = sim_map.get(v.id)
+        if sim_info:
+            item.sim_numero    = sim_info[0]
+            item.sim_operateur = sim_info[2]
+            item.statut_sim    = sim_info[3].value if sim_info[3] else None
+            item.forfait       = float(sim_info[4]) if sim_info[4] is not None else None
+            item.derniere_facture = fact_map.get(sim_info[1])
         result.append(item)
     return result
 
@@ -871,7 +1366,7 @@ def export_vehicules(db: Session = Depends(get_db)):
             v.marque      or "",
             v.modele      or "",
             v.affectation or "",
-            sim_map.get(v.id) or "",
+            (sim_map.get(v.id) or (None,))[0] or "",
         ])
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";")
@@ -903,12 +1398,22 @@ def export_vehicules_excel(
     vehicules = db.query(Vehicule).order_by(Vehicule.immatriculation).all()
     sim_map   = _vehicule_sim_map(db)
 
+    fact_map = _latest_facture_map(db, type_ligne="GPS")
+
     class VRow:
         def __init__(self, v):
             self.id = v.id; self.immatriculation = v.immatriculation
-            self.marque = v.marque; self.modele = v.modele
+            self.marque = v.marque; self.modele = v.modele; self.imei = v.imei
             self.affectation = v.affectation; self.created_at = v.created_at
-            self.sim_numero = sim_map.get(v.id)
+            sim_info = sim_map.get(v.id)
+            if sim_info:
+                self.sim_numero = sim_info[0]
+                self.forfait    = float(sim_info[4]) if sim_info[4] is not None else None
+                self.derniere_facture = fact_map.get(sim_info[1])
+            else:
+                self.sim_numero = None
+                self.forfait = None
+                self.derniere_facture = None
 
     rows_data = [VRow(v) for v in vehicules]
     if filter_sim == "affecte":      rows_data = [r for r in rows_data if r.sim_numero]
@@ -927,7 +1432,10 @@ def export_vehicules_excel(
         ("modele",     "Modèle",           lambda r: r.modele or ""),
         ("affectation","Affectation",      lambda r: r.affectation or ""),
         ("sim_numero", "Numéro SIM",       lambda r: r.sim_numero or ""),
+        ("imei",       "IMEI",             lambda r: r.imei or ""),
+        ("forfait",    "Forfait",          lambda r: r.forfait if r.forfait is not None else ""),
         ("statut_sim", "Statut SIM",       lambda r: "Affecté" if r.sim_numero else "Non affecté"),
+        ("derniere_facture", "Dernière facture", lambda r: r.derniere_facture["montant_ttc"] if r.derniere_facture and r.derniere_facture.get("montant_ttc") is not None else ""),
         ("created_at", "Date création",    lambda r: r.created_at.strftime("%d/%m/%Y") if r.created_at else ""),
     ]
     selected_keys = set(cols.split(",")) if cols else {c[0] for c in ALL_COLS}
