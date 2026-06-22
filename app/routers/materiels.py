@@ -107,7 +107,7 @@ def update_materiel(materiel_id: int, data: MaterielUpdate, db: Session = Depend
     obj = db.query(Materiel).filter(Materiel.id == materiel_id).first()
     if not obj:
         raise HTTPException(404, "Matériel introuvable")
-    for k, v in data.model_dump(exclude_none=True).items():
+    for k, v in data.model_dump(exclude_unset=True).items():
         setattr(obj, k, v)
     db.commit()
     db.refresh(obj)
