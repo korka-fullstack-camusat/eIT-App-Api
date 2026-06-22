@@ -35,13 +35,21 @@ def list_materiels(
         q = q.filter(Materiel.projet == projet)
     if search:
         term = f"%{search}%"
-        q = q.filter(
+        q = q.outerjoin(
+            Attribution,
+            (Attribution.materiel_id == Materiel.id) & (Attribution.statut == StatutAttribution.ACTIVE),
+        ).filter(
             Materiel.marque.ilike(term) |
             Materiel.modele.ilike(term) |
             Materiel.numero_serie.ilike(term) |
             Materiel.adresse_mac.ilike(term) |
-            Materiel.numero_bon_cmd.ilike(term)
-        )
+            Materiel.reference.ilike(term) |
+            Materiel.numero_bon_cmd.ilike(term) |
+            Materiel.beneficiaire_nom.ilike(term) |
+            Materiel.beneficiaire_prenom.ilike(term) |
+            Attribution.employee_nom.ilike(term) |
+            Attribution.employee_prenom.ilike(term)
+        ).distinct()
     materiels = q.order_by(Materiel.marque, Materiel.modele).all()
 
     result = []
@@ -386,10 +394,16 @@ def export_materiels_excel(
     if etat:          q = q.filter(Materiel.etat == etat)
     if search:
         term = f"%{search}%"
-        q = q.filter(
+        q = q.outerjoin(
+            Attribution,
+            (Attribution.materiel_id == Materiel.id) & (Attribution.statut == StatutAttribution.ACTIVE),
+        ).filter(
             Materiel.marque.ilike(term) | Materiel.modele.ilike(term) |
-            Materiel.numero_serie.ilike(term) | Materiel.adresse_mac.ilike(term)
-        )
+            Materiel.numero_serie.ilike(term) | Materiel.adresse_mac.ilike(term) |
+            Materiel.reference.ilike(term) |
+            Materiel.beneficiaire_nom.ilike(term) | Materiel.beneficiaire_prenom.ilike(term) |
+            Attribution.employee_nom.ilike(term) | Attribution.employee_prenom.ilike(term)
+        ).distinct()
     materiels = q.order_by(Materiel.marque).all()
 
     # Filtre date côté Python (date_acquisition peut être null)
@@ -421,6 +435,7 @@ def export_materiels_excel(
         ("modele",      "Modèle",           lambda m, a: m.modele or ""),
         ("serie",       "N° Série",         lambda m, a: m.numero_serie or ""),
         ("mac",         "Adresse MAC",      lambda m, a: m.adresse_mac or ""),
+        ("reference",   "Référence",        lambda m, a: m.reference or ""),
         ("po",          "N° PO",            lambda m, a: m.numero_bon_cmd or ""),
         ("etat",        "État",             lambda m, a: m.etat or ""),
         ("statut",      "Statut",           lambda m, a: STATUT_LABELS.get(m.statut, m.statut or "")),

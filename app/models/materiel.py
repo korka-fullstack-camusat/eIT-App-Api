@@ -44,6 +44,7 @@ class Materiel(Base):
     modele          = Column(String(150), nullable=True, default="")
     numero_serie    = Column(String(100), unique=True, nullable=True)
     adresse_mac     = Column(String(50), nullable=True)
+    reference       = Column(String(100), nullable=True, index=True)
     numero_bon_cmd  = Column(String(100), nullable=True)
     projet          = Column(String(100), nullable=True)
     beneficiaire_matricule = Column(String(50), nullable=True)

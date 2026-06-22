@@ -32,7 +32,18 @@ def list_sims(
     q = db.query(NumeroSIM).options(joinedload(NumeroSIM.affectation_active))
     if categorie: q = q.filter(NumeroSIM.categorie == categorie)
     if statut:    q = q.filter(NumeroSIM.statut == statut)
-    if search:    q = q.filter(NumeroSIM.numero.ilike(f"%{search}%"))
+    if search:
+        term = f"%{search}%"
+        q = q.outerjoin(
+            AffectationSIM,
+            (AffectationSIM.sim_id == NumeroSIM.id) & (AffectationSIM.is_active == True),
+        ).filter(
+            NumeroSIM.numero.ilike(term) |
+            NumeroSIM.beneficiaire.ilike(term) |
+            NumeroSIM.matricule.ilike(term) |
+            AffectationSIM.employee_nom.ilike(term) |
+            AffectationSIM.employee_matricule.ilike(term)
+        ).distinct()
     sims = q.order_by(NumeroSIM.numero).all()
 
     type_ligne = "MOBILE" if categorie == CategorieSimEnum.EMPLOYE else None
@@ -49,9 +60,39 @@ def list_sims(
 def create_sim(data: NumeroSIMCreate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     if db.query(NumeroSIM).filter(NumeroSIM.numero == data.numero).first():
         raise HTTPException(400, "Ce numéro existe déjà")
-    obj = NumeroSIM(**data.model_dump())
+    payload = data.model_dump()
+    if payload.get("categorie") == CategorieSimEnum.EMPLOYE and not payload.get("beneficiaire"):
+        payload["statut"] = StatutSimEnum.INACTIVE
+    obj = NumeroSIM(**payload)
     db.add(obj); db.commit(); db.refresh(obj)
     return obj
+
+
+@router.get("/sims/stats-counts")
+def sims_stats_counts(
+    categorie: Optional[CategorieSimEnum] = None,
+    search:    Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    q = db.query(NumeroSIM)
+    if categorie: q = q.filter(NumeroSIM.categorie == categorie)
+    if search:
+        term = f"%{search}%"
+        q = q.outerjoin(
+            AffectationSIM,
+            (AffectationSIM.sim_id == NumeroSIM.id) & (AffectationSIM.is_active == True),
+        ).filter(
+            NumeroSIM.numero.ilike(term) |
+            NumeroSIM.beneficiaire.ilike(term) |
+            NumeroSIM.matricule.ilike(term) |
+            AffectationSIM.employee_nom.ilike(term) |
+            AffectationSIM.employee_matricule.ilike(term)
+        ).distinct()
+    sims = q.all()
+    counts: dict = {"total": len(sims)}
+    for s in sims:
+        counts[s.statut.value] = counts.get(s.statut.value, 0) + 1
+    return counts
 
 
 @router.get("/sims/export")
@@ -258,7 +299,7 @@ async def import_sims(file: UploadFile = File(...), db: Session = Depends(get_db
 def update_sim(sim_id: int, data: NumeroSIMUpdate, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(NumeroSIM).filter(NumeroSIM.id == sim_id).first()
     if not obj: raise HTTPException(404, "SIM introuvable")
-    for k, v in data.model_dump(exclude_none=True).items():
+    for k, v in data.model_dump(exclude_unset=True).items():
         setattr(obj, k, v)
     db.commit(); db.refresh(obj)
     return obj
@@ -285,7 +326,17 @@ def affecter_sim(sim_id: int, data: AffectationSIMCreate, db: Session = Depends(
     payload = data.model_dump()
     payload["sim_id"] = sim_id
     obj = AffectationSIM(**payload)
-    db.add(obj); db.commit(); db.refresh(obj)
+    db.add(obj)
+
+    sim = db.query(NumeroSIM).filter(NumeroSIM.id == sim_id).first()
+    if sim:
+        if obj.employee_nom:
+            sim.beneficiaire = obj.employee_nom
+        if obj.employee_matricule:
+            sim.matricule = obj.employee_matricule
+        sim.statut = StatutSimEnum.ACTIVE
+
+    db.commit(); db.refresh(obj)
     return obj
 
 
@@ -299,6 +350,13 @@ def desaffecter_sim(sim_id: int, data: DesaffectationSIMIn, db: Session = Depend
     active.is_active = False
     active.date_fin  = date.today()
     active.motif_fin = data.motif
+
+    sim = db.query(NumeroSIM).filter(NumeroSIM.id == sim_id).first()
+    if sim:
+        sim.beneficiaire = None
+        sim.matricule = None
+        sim.statut = StatutSimEnum.INACTIVE
+
     db.commit(); db.refresh(active)
     return active
 
@@ -372,7 +430,7 @@ def _latest_facture_map(db: Session, type_ligne: Optional[str] = None) -> dict:
             "mois":        f.mois,
             "annee":       f.annee,
             "operateur":   f.operateur,
-            "montant_ttc": float(l.montant_ttc) if l.montant_ttc is not None else (float(l.montant) if l.montant is not None else None),
+            "montant_ttc": float(l.montant_ht) if (l.solde_facture is not None and l.montant_ht is not None) else None,
         }
         for l, f in rows
     }
@@ -1567,26 +1625,29 @@ async def import_vehicules(file: UploadFile = File(...), db: Session = Depends(g
         # Auto-affectation SIM
         if sim_numero:
             sim_obj = db.query(NumeroSIM).filter(NumeroSIM.numero == sim_numero).first()
-            if sim_obj:
-                existing_aff = db.query(AffectationSIM).filter(
-                    AffectationSIM.vehicule_id == veh_obj.id,
+            if not sim_obj:
+                sim_obj = NumeroSIM(numero=sim_numero, categorie=CategorieSimEnum.M2M_VEHICULE)
+                db.add(sim_obj)
+                db.flush()
+            existing_aff = db.query(AffectationSIM).filter(
+                AffectationSIM.vehicule_id == veh_obj.id,
+                AffectationSIM.is_active == True,
+            ).first()
+            if not existing_aff:
+                old_aff = db.query(AffectationSIM).filter(
+                    AffectationSIM.sim_id == sim_obj.id,
                     AffectationSIM.is_active == True,
                 ).first()
-                if not existing_aff:
-                    old_aff = db.query(AffectationSIM).filter(
-                        AffectationSIM.sim_id == sim_obj.id,
-                        AffectationSIM.is_active == True,
-                    ).first()
-                    if old_aff:
-                        old_aff.is_active = False
-                        old_aff.date_fin  = _date.today()
-                    db.add(AffectationSIM(
-                        sim_id      = sim_obj.id,
-                        vehicule_id = veh_obj.id,
-                        date_debut  = _date.today(),
-                        is_active   = True,
-                    ))
-                    affecte += 1
+                if old_aff:
+                    old_aff.is_active = False
+                    old_aff.date_fin  = _date.today()
+                db.add(AffectationSIM(
+                    sim_id      = sim_obj.id,
+                    vehicule_id = veh_obj.id,
+                    date_debut  = _date.today(),
+                    is_active   = True,
+                ))
+                affecte += 1
 
     db.commit()
     return {"created": created, "updated": updated,

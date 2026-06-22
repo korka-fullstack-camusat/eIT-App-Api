@@ -86,6 +86,9 @@ with engine.connect() as conn:
         # Informations issues du fichier de suivi ORANGE-Gps_Vehicules pour les SIM M2M véhicules
         "ALTER TABLE numeros_sim ADD COLUMN IF NOT EXISTS forfait NUMERIC(10,2)",
         "ALTER TABLE vehicules ADD COLUMN IF NOT EXISTS imei VARCHAR(30)",
+        # Référence d'identification du matériel (code interne distinct du n° série / MAC)
+        "ALTER TABLE materiels ADD COLUMN IF NOT EXISTS reference VARCHAR(100)",
+        "CREATE INDEX IF NOT EXISTS ix_materiels_reference ON materiels(reference)",
     ]
     for sql in migrations:
         try:

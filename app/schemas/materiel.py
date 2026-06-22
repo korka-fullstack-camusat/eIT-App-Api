@@ -10,6 +10,7 @@ class MaterielBase(BaseModel):
     modele:           Optional[str] = ""
     numero_serie:     Optional[str] = None
     adresse_mac:      Optional[str] = None
+    reference:        Optional[str] = None
     numero_bon_cmd:   Optional[str] = None
     projet:           Optional[str] = None
     beneficiaire_matricule: Optional[str] = None
@@ -30,6 +31,7 @@ class MaterielUpdate(BaseModel):
     modele:           Optional[str] = None
     numero_serie:     Optional[str] = None
     adresse_mac:      Optional[str] = None
+    reference:        Optional[str] = None
     numero_bon_cmd:   Optional[str] = None
     projet:           Optional[str] = None
     beneficiaire_matricule: Optional[str] = None
