@@ -134,10 +134,10 @@ def delete_materiel(materiel_id: int, db: Session = Depends(get_db), _: User = D
 
 
 @router.post("/import")
-async def import_materiels(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
-    content = await file.read()
+def import_materiels(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
+    content = file.file.read()
     filename = (file.filename or "").lower()
-    if filename.endswith(".xlsx"):
+    if filename.endswith(".xlsx") or filename.endswith(".xlsm"):
         return _import_materiels_xlsx(content, db)
     return _import_materiels_csv(content, db)
 
@@ -238,6 +238,11 @@ def _import_materiels_xlsx(content: bytes, db: Session):
         "SWITCH": "SWITCH",
         "ROUTEUR": "ROUTEUR",
         "ONDULEUR": "ONDULEUR",
+        "AP": "AP",
+        "POINTDACCES": "AP",
+        "SERVEUR": "SERVEUR",
+        "PAREFEU": "PARE_FEU",
+        "FIREWALL": "PARE_FEU",
     }
     STATUT_MAP = {
         "ENSERVICE": "ATTRIBUE",
@@ -261,16 +266,17 @@ def _import_materiels_xlsx(content: bytes, db: Session):
     sheet_name = "Suivi Parc Informatique" if "Suivi Parc Informatique" in wb.sheetnames else wb.sheetnames[0]
     ws = wb[sheet_name]
 
-    # Repérer la ligne d'en-tête (celle qui contient la colonne "Nature")
+    # Repérer la ligne d'en-tête (celle qui contient "Nature", "Désignation" ou "Matricule")
+    HEADER_ANCHORS = {"NATURE", "DESIGNATIONEQUIPEMENT", "DESIGNATION", "MATRICULE"}
     header_row_idx, headers = None, {}
-    for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=5, values_only=True), start=1):
+    for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=10, values_only=True), start=1):
         normalized = [norm(v) if v is not None else "" for v in row]
-        if "NATURE" in normalized:
+        if HEADER_ANCHORS & set(normalized):
             header_row_idx = r_idx
             headers = {h: c for c, h in enumerate(normalized) if h}
             break
     if header_row_idx is None:
-        raise HTTPException(400, "Format non reconnu : colonne 'Nature' introuvable dans le fichier.")
+        raise HTTPException(400, "Format non reconnu : aucune colonne attendue (Nature, Désignation, Matricule) trouvée dans les 10 premières lignes.")
 
     def col(row, *names):
         for name in names:

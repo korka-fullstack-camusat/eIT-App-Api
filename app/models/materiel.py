@@ -17,6 +17,9 @@ class TypeMateriel(str, enum.Enum):
     SWITCH              = "SWITCH"
     ROUTEUR             = "ROUTEUR"
     ONDULEUR            = "ONDULEUR"
+    AP                  = "AP"
+    SERVEUR             = "SERVEUR"
+    PARE_FEU            = "PARE_FEU"
     AUTRE               = "AUTRE"
 
 

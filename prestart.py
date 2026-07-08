@@ -89,6 +89,10 @@ with engine.connect() as conn:
         # Référence d'identification du matériel (code interne distinct du n° série / MAC)
         "ALTER TABLE materiels ADD COLUMN IF NOT EXISTS reference VARCHAR(100)",
         "CREATE INDEX IF NOT EXISTS ix_materiels_reference ON materiels(reference)",
+        # Nouveaux types matériel : AP, Serveur, Pare-feu
+        "ALTER TYPE typemateriel ADD VALUE IF NOT EXISTS 'AP'",
+        "ALTER TYPE typemateriel ADD VALUE IF NOT EXISTS 'SERVEUR'",
+        "ALTER TYPE typemateriel ADD VALUE IF NOT EXISTS 'PARE_FEU'",
     ]
     for sql in migrations:
         try:

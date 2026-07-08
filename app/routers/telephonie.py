@@ -238,7 +238,7 @@ def export_sims_excel(
 
 
 @router.post("/sims/import")
-async def import_sims(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
+def import_sims(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
     CAT_MAP = {
         "EMPLOYE": "EMPLOYE", "EMPLOYÉ": "EMPLOYE", "EMPLOYE": "EMPLOYE",
         "M2M_SITE": "M2M_SITE", "M2M SITE": "M2M_SITE", "SITE": "M2M_SITE",
@@ -246,7 +246,7 @@ async def import_sims(file: UploadFile = File(...), db: Session = Depends(get_db
         "M2M VÉHICULE": "M2M_VEHICULE", "VEHICULE": "M2M_VEHICULE",
     }
 
-    content = await file.read()
+    content = file.file.read()
     try:
         text = content.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -309,6 +309,7 @@ def update_sim(sim_id: int, data: NumeroSIMUpdate, db: Session = Depends(get_db)
 def delete_sim(sim_id: int, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(NumeroSIM).filter(NumeroSIM.id == sim_id).first()
     if not obj: raise HTTPException(404, "SIM introuvable")
+    db.query(AffectationSIM).filter(AffectationSIM.sim_id == sim_id).delete()
     db.delete(obj); db.commit()
 
 
@@ -820,7 +821,7 @@ def export_sites_excel(
 
 
 @router.post("/sites/import")
-async def import_sites(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
+def import_sites(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
     """
     Accepte deux formats de colonnes (séparateur ;) :
     - Nouveau format CAMUSAT : Numéro ; IMSI ; SITES ID ; NOMS SITES
@@ -836,7 +837,7 @@ async def import_sites(file: UploadFile = File(...), db: Session = Depends(get_d
     import unicodedata as _ud
     from datetime import date as _date
 
-    content = await file.read()
+    content = file.file.read()
 
     if (file.filename or "").lower().endswith(".xlsx"):
         return _import_sites_xlsx(content, db)
@@ -1287,7 +1288,7 @@ def _import_gps_vehicules_xlsx(content: bytes, db: Session):
 
 
 @router.post("/import-global")
-async def import_global(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
+def import_global(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
     """Import global depuis le fichier de suivi flotte CAMUSAT (.xlsx unique) :
     remplit automatiquement les numéros SIM employés (feuille
     'ORANGE-mobiles'), les véhicules M2M (feuille 'ORANGE-Gps_Vehicules') et
@@ -1301,7 +1302,7 @@ async def import_global(file: UploadFile = File(...), db: Session = Depends(get_
     if not (file.filename or "").lower().endswith(".xlsx"):
         raise HTTPException(400, "Le fichier doit être au format Excel (.xlsx)")
 
-    content = await file.read()
+    content = file.file.read()
 
     result = {
         "employes":  _import_mobiles_xlsx(content, db),
@@ -1562,7 +1563,7 @@ def export_vehicules_excel(
 
 
 @router.post("/vehicules/import")
-async def import_vehicules(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
+def import_vehicules(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
     """
     Formats acceptés (séparateur ; ou tabulation) :
     - Nouveau format CAMUSAT : Numéro ; IMSI ; IMMATRICULATION ; MODEL
@@ -1574,7 +1575,7 @@ async def import_vehicules(file: UploadFile = File(...), db: Session = Depends(g
     import unicodedata as _ud
     from datetime import date as _date
 
-    content = await file.read()
+    content = file.file.read()
     try:
         text = content.decode("utf-8-sig")
     except UnicodeDecodeError:

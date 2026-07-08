@@ -64,6 +64,7 @@ class NumeroSIMCreate(BaseModel):
 
 
 class NumeroSIMUpdate(BaseModel):
+    numero:      Optional[str] = None
     imsi:        Optional[str] = None
     categorie:   Optional[CategorieSimEnum] = None
     statut:      Optional[StatutSimEnum] = None
