@@ -947,30 +947,47 @@ def import_sites(file: UploadFile = File(...), db: Session = Depends(get_db), _:
 
 
 def _import_sites_xlsx(content: bytes, db: Session):
-    """Import depuis le fichier de suivi flotte (.xlsx) — feuilles
-    'RMS_Orange' / 'RMS_Free' (ou toute feuille contenant les colonnes
-    Numéro / IMSI / SITES ID / NOMS SITES). Crée/maj les sites RMS, les
-    numéros SIM correspondants (catégorie M2M_SITE) et leur affectation."""
-    import io, re, unicodedata
-    from datetime import date as _date
+    """Wrapper : parse le fichier puis délègue à _import_sites_from_wb."""
+    import io
     from openpyxl import load_workbook
+    try:
+        wb = load_workbook(io.BytesIO(content), data_only=True)
+    except Exception:
+        raise HTTPException(400, "Fichier Excel illisible.")
+    return _import_sites_from_wb(wb, db)
+
+
+def _import_sites_from_wb(wb, db: Session):
+    """Import depuis les feuilles RMS_Orange / RMS_Free — version optimisée
+    (un seul chargement du workbook, pré-chargement des données en dicts)."""
+    import re, unicodedata
+    from datetime import date as _date
 
     def norm(s) -> str:
         s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode()
         return re.sub(r"[^A-Z0-9]", "", s.upper())
 
-    try:
-        wb = load_workbook(io.BytesIO(content), data_only=True)
-    except Exception:
-        raise HTTPException(400, "Fichier Excel illisible.")
+    # ── Pré-chargement en masse (1 requête par table) ────────────────────────
+    sim_map:          dict = {s.numero:    s for s in db.query(NumeroSIM).all()}
+    site_by_code:     dict = {s.code_site: s for s in db.query(SiteGSM).filter(SiteGSM.code_site.isnot(None)).all()}
+    site_by_nom:      dict = {s.nom:       s for s in db.query(SiteGSM).all()}
+    active_aff_by_sim: dict = {
+        a.sim_id: a for a in db.query(AffectationSIM).filter(AffectationSIM.is_active == True).all()
+    }
+    active_aff_site_ids: set = {
+        site_id for (site_id,) in
+        db.query(AffectationSIM.site_id).filter(
+            AffectationSIM.is_active == True, AffectationSIM.site_id.isnot(None)
+        ).all()
+    }
 
     created, updated, affecte, sims_crees, errors = 0, 0, 0, 0, []
+    pending_affs: list = []  # (sim_obj, site_obj)
 
     for ws in wb.worksheets:
         sheet_norm = norm(ws.title)
         operateur = "Orange" if "ORANGE" in sheet_norm else "Free" if "FREE" in sheet_norm else None
 
-        # Repérer la ligne d'en-tête (celle qui contient "NOMS SITES")
         header_row_idx, headers = None, {}
         for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=4, values_only=True), start=1):
             normalized = [norm(v) if v is not None else "" for v in row]
@@ -979,7 +996,7 @@ def _import_sites_xlsx(content: bytes, db: Session):
                 headers = {h: c for c, h in enumerate(normalized) if h}
                 break
         if header_row_idx is None:
-            continue  # feuille non concernée (ex : "Equipes pointage", "Feuil1"…)
+            continue
 
         def col(row, *names):
             for name in names:
@@ -1010,26 +1027,22 @@ def _import_sites_xlsx(content: bytes, db: Session):
             num_val = col(row, "NUMERO", "NUM")
             sim_numero = str(int(num_val)) if isinstance(num_val, float) else (str(num_val).strip() if num_val is not None else None)
 
-            # ── Créer ou mettre à jour le site ──────────────────────────────────
-            existing = (
-                db.query(SiteGSM).filter(SiteGSM.code_site == code_site).first()
-                if code_site else None
-            ) or db.query(SiteGSM).filter(SiteGSM.nom == nom).first()
-
-            if existing:
-                if code_site: existing.code_site = code_site
-                if imsi:       existing.imsi      = imsi
-                site_obj = existing
+            # Upsert site via dict
+            site_obj = (site_by_code.get(code_site) if code_site else None) or site_by_nom.get(nom)
+            if site_obj:
+                if code_site: site_obj.code_site = code_site
+                if imsi:       site_obj.imsi      = imsi
                 updated += 1
             else:
                 site_obj = SiteGSM(nom=nom, code_site=code_site, imsi=imsi)
                 db.add(site_obj)
-                db.flush()
+                if code_site:
+                    site_by_code[code_site] = site_obj
+                site_by_nom[nom] = site_obj
                 created += 1
 
-            # ── Créer le numéro SIM si besoin, puis l'affecter au site ──────────
             if sim_numero:
-                sim_obj = db.query(NumeroSIM).filter(NumeroSIM.numero == sim_numero).first()
+                sim_obj = sim_map.get(sim_numero)
                 if not sim_obj:
                     sim_obj = NumeroSIM(
                         numero=sim_numero, imsi=imsi,
@@ -1037,7 +1050,7 @@ def _import_sites_xlsx(content: bytes, db: Session):
                         operateur=operateur,
                     )
                     db.add(sim_obj)
-                    db.flush()
+                    sim_map[sim_numero] = sim_obj
                     sims_crees += 1
                 else:
                     if operateur and not sim_obj.operateur:
@@ -1045,29 +1058,29 @@ def _import_sites_xlsx(content: bytes, db: Session):
                     if imsi and not sim_obj.imsi:
                         sim_obj.imsi = imsi
 
-                existing_aff = db.query(AffectationSIM).filter(
-                    AffectationSIM.site_id == site_obj.id,
-                    AffectationSIM.is_active == True,
-                ).first()
-                if not existing_aff:
-                    old_aff = db.query(AffectationSIM).filter(
-                        AffectationSIM.sim_id == sim_obj.id,
-                        AffectationSIM.is_active == True,
-                    ).first()
-                    if old_aff:
-                        old_aff.is_active = False
-                        old_aff.date_fin  = _date.today()
+                pending_affs.append((sim_obj, site_obj))
 
-                    db.add(AffectationSIM(
-                        sim_id     = sim_obj.id,
-                        site_id    = site_obj.id,
-                        date_debut = _date.today(),
-                        is_active  = True,
-                    ))
-                    affecte += 1
+    # Un seul flush pour obtenir les IDs de tous les nouveaux objets
+    db.flush()
+
+    for sim_obj, site_obj in pending_affs:
+        if site_obj.id not in active_aff_site_ids:
+            old_aff = active_aff_by_sim.get(sim_obj.id)
+            if old_aff:
+                old_aff.is_active = False
+                old_aff.date_fin  = _date.today()
+                del active_aff_by_sim[sim_obj.id]
+
+            db.add(AffectationSIM(
+                sim_id     = sim_obj.id,
+                site_id    = site_obj.id,
+                date_debut = _date.today(),
+                is_active  = True,
+            ))
+            active_aff_site_ids.add(site_obj.id)
+            affecte += 1
 
     relinked = _relink_lignes_facture(db)
-
     db.commit()
     return {
         "created": created, "updated": updated,
@@ -1076,33 +1089,21 @@ def _import_sites_xlsx(content: bytes, db: Session):
     }
 
 
-def _import_mobiles_xlsx(content: bytes, db: Session):
-    """Import depuis la feuille 'ORANGE-mobiles' du fichier de suivi flotte
-    (.xlsx) — crée/met à jour les numéros SIM employés (catégorie EMPLOYE)
-    avec matricule / bénéficiaire / service / business line / fonction, et
-    crée l'affectation employé correspondante si elle n'existe pas déjà.
-    La partie facturation (colonnes mensuelles) n'est PAS traitée ici."""
-    import io, re, unicodedata
+def _import_mobiles_xlsx(wb, db: Session):
+    """Import depuis la feuille 'ORANGE-mobiles' — version optimisée
+    (workbook déjà parsé, pré-chargement des SIMs et affectations en dicts)."""
+    import re, unicodedata
     from datetime import date as _date
-    from openpyxl import load_workbook
 
     def norm(s) -> str:
         s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode()
         return re.sub(r"[^A-Z0-9]", "", s.upper())
-
-    try:
-        wb = load_workbook(io.BytesIO(content), data_only=True)
-    except Exception:
-        raise HTTPException(400, "Fichier Excel illisible.")
-
-    created, updated, affecte, errors = 0, 0, 0, []
 
     if "ORANGE-mobiles" not in wb.sheetnames:
         return {"created": 0, "updated": 0, "affecte": 0, "errors": []}
 
     ws = wb["ORANGE-mobiles"]
 
-    # Repérer la ligne d'en-tête (celle qui contient "MATRICULE" et "BENEFICIAIRE")
     header_row_idx = None
     for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=5, values_only=True), start=1):
         normalized = [norm(v) if v is not None else "" for v in row]
@@ -1111,6 +1112,16 @@ def _import_mobiles_xlsx(content: bytes, db: Session):
             break
     if header_row_idx is None:
         return {"created": 0, "updated": 0, "affecte": 0, "errors": ["Feuille ORANGE-mobiles : en-tête introuvable"]}
+
+    # ── Pré-chargement en masse ──────────────────────────────────────────────
+    sim_map: dict = {s.numero: s for s in db.query(NumeroSIM).all()}
+    active_aff_sim_ids: set = {
+        sim_id for (sim_id,) in
+        db.query(AffectationSIM.sim_id).filter(AffectationSIM.is_active == True).all()
+    }
+
+    created, updated, affecte, errors = 0, 0, 0, []
+    pending_affs: list = []  # (sim_obj, beneficiaire_s, matricule_s)
 
     for i, row in enumerate(ws.iter_rows(min_row=header_row_idx + 1, values_only=True), start=header_row_idx + 1):
         if all(v is None for v in row):
@@ -1136,7 +1147,7 @@ def _import_mobiles_xlsx(content: bytes, db: Session):
         business_line_s = str(business_line).strip()  if business_line not in (None, "") else None
         fonction_s      = str(fonction).strip()        if fonction      not in (None, "") else None
 
-        sim_obj = db.query(NumeroSIM).filter(NumeroSIM.numero == numero).first()
+        sim_obj = sim_map.get(numero)
         if sim_obj:
             if matricule_s:     sim_obj.matricule     = matricule_s
             if beneficiaire_s:  sim_obj.beneficiaire  = beneficiaire_s
@@ -1151,49 +1162,41 @@ def _import_mobiles_xlsx(content: bytes, db: Session):
                 business_line=business_line_s, fonction=fonction_s,
             )
             db.add(sim_obj)
-            db.flush()
+            sim_map[numero] = sim_obj
             created += 1
 
-        # ── Auto-affectation employé ────────────────────────────────────────
         if beneficiaire_s:
-            existing_aff = db.query(AffectationSIM).filter(
-                AffectationSIM.sim_id == sim_obj.id,
-                AffectationSIM.is_active == True,
-            ).first()
-            if not existing_aff:
-                db.add(AffectationSIM(
-                    sim_id=sim_obj.id,
-                    date_debut=_date.today(),
-                    is_active=True,
-                    employee_nom=beneficiaire_s,
-                    employee_matricule=matricule_s,
-                    notes="Importé depuis SUIVI FLOTTE CAMUSAT (ORANGE-mobiles)",
-                ))
-                affecte += 1
+            pending_affs.append((sim_obj, beneficiaire_s, matricule_s))
+
+    # Un seul flush pour obtenir les IDs des nouveaux SIMs
+    db.flush()
+
+    for sim_obj, beneficiaire_s, matricule_s in pending_affs:
+        if sim_obj.id not in active_aff_sim_ids:
+            db.add(AffectationSIM(
+                sim_id=sim_obj.id,
+                date_debut=_date.today(),
+                is_active=True,
+                employee_nom=beneficiaire_s,
+                employee_matricule=matricule_s,
+                notes="Importé depuis SUIVI FLOTTE CAMUSAT (ORANGE-mobiles)",
+            ))
+            active_aff_sim_ids.add(sim_obj.id)
+            affecte += 1
 
     db.commit()
     return {"created": created, "updated": updated, "affecte": affecte, "errors": errors}
 
 
-def _import_gps_vehicules_xlsx(content: bytes, db: Session):
-    """Import depuis la feuille 'ORANGE-Gps_Vehicules' du fichier de suivi
-    flotte (.xlsx) — crée/met à jour les numéros SIM M2M véhicule (forfait),
-    les véhicules (modèle / IMEI) et leur affectation. Ignore les lignes
-    'Non affecté', les IMEI '#N/A', les lignes de test ('AA TEST...') et la
-    ligne 'TOTAL'. La partie facturation (colonnes mensuelles) n'est PAS
-    traitée ici."""
-    import io, re, unicodedata
+def _import_gps_vehicules_xlsx(wb, db: Session):
+    """Import depuis la feuille 'ORANGE-Gps_Vehicules' — version optimisée
+    (workbook déjà parsé, pré-chargement des SIMs/véhicules/affectations en dicts)."""
+    import re, unicodedata
     from datetime import date as _date
-    from openpyxl import load_workbook
 
     def norm(s) -> str:
         s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode()
         return re.sub(r"[^A-Z0-9]", "", s.upper())
-
-    try:
-        wb = load_workbook(io.BytesIO(content), data_only=True)
-    except Exception:
-        raise HTTPException(400, "Fichier Excel illisible.")
 
     created_sim, updated_sim, created_veh, updated_veh, affecte, errors = 0, 0, 0, 0, 0, []
 
@@ -1202,7 +1205,6 @@ def _import_gps_vehicules_xlsx(content: bytes, db: Session):
 
     ws = wb["ORANGE-Gps_Vehicules"]
 
-    # Repérer la ligne d'en-tête (celle qui contient "N°SIM" / "NSIM")
     header_row_idx = None
     for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=5, values_only=True), start=1):
         normalized = [norm(v) if v is not None else "" for v in row]
@@ -1213,6 +1215,16 @@ def _import_gps_vehicules_xlsx(content: bytes, db: Session):
         return {"created_sim": 0, "updated_sim": 0, "created_vehicule": 0, "updated_vehicule": 0, "affecte": 0,
                 "errors": ["Feuille ORANGE-Gps_Vehicules : en-tête introuvable"]}
 
+    # ── Pré-chargement en masse ──────────────────────────────────────────────
+    sim_map: dict = {s.numero:           s for s in db.query(NumeroSIM).all()}
+    veh_map: dict = {v.immatriculation:  v for v in db.query(Vehicule).all()}
+    active_aff_sim_ids: set = {
+        sim_id for (sim_id,) in
+        db.query(AffectationSIM.sim_id).filter(AffectationSIM.is_active == True).all()
+    }
+
+    pending_affs: list = []  # (sim_obj, veh_obj)
+
     for i, row in enumerate(ws.iter_rows(min_row=header_row_idx + 1, values_only=True), start=header_row_idx + 1):
         numero_val = row[0] if len(row) > 0 else None
         if numero_val is None:
@@ -1220,7 +1232,7 @@ def _import_gps_vehicules_xlsx(content: bytes, db: Session):
         numero = str(int(numero_val)) if isinstance(numero_val, (int, float)) else str(numero_val).strip()
         numero = re.sub(r"\D", "", numero)
         if not numero:
-            continue  # ignore "TOTAL", lignes d'en-tête répétées, etc.
+            continue
 
         immat   = row[1] if len(row) > 1 else None
         modele  = row[2] if len(row) > 2 else None
@@ -1234,11 +1246,10 @@ def _import_gps_vehicules_xlsx(content: bytes, db: Session):
             imei_s = None
         forfait_v = float(forfait) if isinstance(forfait, (int, float)) else None
 
-        # Lignes de test à ignorer
         if immat_s and norm(immat_s).startswith("AATEST"):
             continue
 
-        sim_obj = db.query(NumeroSIM).filter(NumeroSIM.numero == numero).first()
+        sim_obj = sim_map.get(numero)
         if sim_obj:
             if forfait_v is not None:
                 sim_obj.forfait = forfait_v
@@ -1249,12 +1260,11 @@ def _import_gps_vehicules_xlsx(content: bytes, db: Session):
                 forfait=forfait_v,
             )
             db.add(sim_obj)
-            db.flush()
+            sim_map[numero] = sim_obj
             created_sim += 1
 
-        # ── Véhicule + affectation ───────────────────────────────────────────
         if immat_s and norm(immat_s) != "NONAFFECTE":
-            veh_obj = db.query(Vehicule).filter(Vehicule.immatriculation == immat_s).first()
+            veh_obj = veh_map.get(immat_s)
             if veh_obj:
                 if modele_s: veh_obj.modele = modele_s
                 if imei_s:   veh_obj.imei   = imei_s
@@ -1262,22 +1272,25 @@ def _import_gps_vehicules_xlsx(content: bytes, db: Session):
             else:
                 veh_obj = Vehicule(immatriculation=immat_s, modele=modele_s, imei=imei_s)
                 db.add(veh_obj)
-                db.flush()
+                veh_map[immat_s] = veh_obj
                 created_veh += 1
 
-            existing_aff = db.query(AffectationSIM).filter(
-                AffectationSIM.sim_id == sim_obj.id,
-                AffectationSIM.is_active == True,
-            ).first()
-            if not existing_aff:
-                db.add(AffectationSIM(
-                    sim_id=sim_obj.id,
-                    vehicule_id=veh_obj.id,
-                    date_debut=_date.today(),
-                    is_active=True,
-                    notes="Importé depuis SUIVI FLOTTE CAMUSAT (ORANGE-Gps_Vehicules)",
-                ))
-                affecte += 1
+            pending_affs.append((sim_obj, veh_obj))
+
+    # Un seul flush pour obtenir les IDs
+    db.flush()
+
+    for sim_obj, veh_obj in pending_affs:
+        if sim_obj.id not in active_aff_sim_ids:
+            db.add(AffectationSIM(
+                sim_id=sim_obj.id,
+                vehicule_id=veh_obj.id,
+                date_debut=_date.today(),
+                is_active=True,
+                notes="Importé depuis SUIVI FLOTTE CAMUSAT (ORANGE-Gps_Vehicules)",
+            ))
+            active_aff_sim_ids.add(sim_obj.id)
+            affecte += 1
 
     db.commit()
     return {
@@ -1302,12 +1315,19 @@ def import_global(file: UploadFile = File(...), db: Session = Depends(get_db), _
     if not (file.filename or "").lower().endswith(".xlsx"):
         raise HTTPException(400, "Le fichier doit être au format Excel (.xlsx)")
 
+    import io
+    from openpyxl import load_workbook
     content = file.file.read()
+    try:
+        wb = load_workbook(io.BytesIO(content), data_only=True)
+    except Exception:
+        raise HTTPException(400, "Fichier Excel illisible.")
 
+    # Le workbook est parsé une seule fois et passé à chaque fonction
     result = {
-        "employes":  _import_mobiles_xlsx(content, db),
-        "vehicules": _import_gps_vehicules_xlsx(content, db),
-        "sites":     _import_sites_xlsx(content, db),
+        "employes":  _import_mobiles_xlsx(wb, db),
+        "vehicules": _import_gps_vehicules_xlsx(wb, db),
+        "sites":     _import_sites_from_wb(wb, db),
     }
 
     import json

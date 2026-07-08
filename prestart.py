@@ -5,7 +5,7 @@ Crée les tables et l'utilisateur admin par défaut.
 import time
 import sqlalchemy
 from app.database import Base, engine, SessionLocal
-from app.models import Materiel, Attribution, NumeroSIM, SiteGSM, Vehicule, AffectationSIM, FactureTelecom, LigneFacture, User, ImportGlobalLog
+from app.models import Materiel, Attribution, NumeroSIM, SiteGSM, Vehicule, AffectationSIM, FactureTelecom, LigneFacture, User, ImportGlobalLog, ExportLog
 from app.services.auth_service import hash_password
 
 print("→ Attente de la base de données...")

@@ -3,3 +3,4 @@ from .attribution import Attribution, StatutAttribution, MotifRestitution
 from .telephonie import NumeroSIM, SiteGSM, Vehicule, AffectationSIM, CategorieSimEnum, StatutSimEnum, ImportGlobalLog
 from .facture import FactureTelecom, LigneFacture
 from .user import User
+from .export_log import ExportLog
