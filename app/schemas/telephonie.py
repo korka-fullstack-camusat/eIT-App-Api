@@ -12,10 +12,10 @@ class SiteGSMCreate(BaseModel):
 
 
 class DerniereFactureInfo(BaseModel):
-    mois:        int
-    annee:       int
-    operateur:   Optional[str] = None
-    montant_ttc: Optional[float] = None
+    mois:          int
+    annee:         int
+    operateur:     Optional[str]   = None
+    solde_facture: Optional[float] = None
 
 
 class SiteGSMOut(SiteGSMCreate):

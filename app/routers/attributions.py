@@ -92,17 +92,20 @@ def export_attributions_excel_proxy(
     date_debut: Optional[date]              = Query(None),
     date_fin:   Optional[date]              = Query(None),
     statut:     Optional[StatutAttribution] = Query(None),
+    service:    Optional[str]               = Query(None),
+    search:     Optional[str]               = Query(None),
     cols:       Optional[str]               = Query(None),
     db: Session = Depends(get_db),
 ):
     """Proxy — défini avant /{attribution_id} pour éviter la capture par FastAPI."""
     return _generate_attributions_excel(
-        date_debut=date_debut, date_fin=date_fin, statut=statut, cols=cols, db=db
+        date_debut=date_debut, date_fin=date_fin, statut=statut,
+        service=service, search=search, cols=cols, db=db
     )
 
 
 def _generate_attributions_excel(
-    date_debut, date_fin, statut, cols, db
+    date_debut, date_fin, statut, cols, db, service=None, search=None
 ):
     """Génère un fichier Excel stylisé des attributions."""
     import io
@@ -115,6 +118,16 @@ def _generate_attributions_excel(
     if statut:     q = q.filter(Attribution.statut == statut)
     if date_debut: q = q.filter(Attribution.date_attribution >= date_debut)
     if date_fin:   q = q.filter(Attribution.date_attribution <= date_fin)
+    if service:    q = q.filter(Attribution.employee_service == service)
+    if search:
+        like = f"%{search}%"
+        q = q.outerjoin(Materiel, Attribution.materiel_id == Materiel.id).filter(
+            Attribution.employee_nom.ilike(like)
+            | Attribution.employee_prenom.ilike(like)
+            | Attribution.employee_matricule.ilike(like)
+            | Attribution.employee_service.ilike(like)
+            | Materiel.marque.ilike(like)
+        )
     attrs = q.order_by(Attribution.date_attribution.desc()).all()
 
     TYPE_LABELS = {
@@ -122,6 +135,7 @@ def _generate_attributions_excel(
         "ECRAN": "Écran", "SOURIS": "Souris", "CLAVIER": "Clavier",
         "TELEPHONE": "Téléphone", "IMPRIMANTE": "Imprimante",
         "SWITCH": "Switch", "ROUTEUR": "Routeur", "ONDULEUR": "Onduleur", "AUTRE": "Autre",
+        "TABLETTE": "Tablette", "AP": "AP", "SERVEUR": "Serveur", "PARE_FEU": "Pare-feu",
     }
     STATUT_LABELS = {"ACTIVE": "Active", "CLOTUREE": "Clôturée"}
     MOTIF_LABELS  = {

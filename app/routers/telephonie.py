@@ -431,7 +431,7 @@ def _latest_facture_map(db: Session, type_ligne: Optional[str] = None) -> dict:
             "mois":        f.mois,
             "annee":       f.annee,
             "operateur":   f.operateur,
-            "montant_ttc": float(l.montant_ht) if (l.solde_facture is not None and l.montant_ht is not None) else None,
+            "solde_facture": float(l.solde_facture) if l.solde_facture is not None else None,
         }
         for l, f in rows
     }
@@ -661,8 +661,9 @@ def get_site_facturation(site_id: int, db: Session = Depends(get_db)):
                 "mois":      f.mois,
                 "annee":     f.annee,
                 "operateur": f.operateur,
-                "montant":     float(l.montant)     if l.montant     is not None else None,
-                "montant_ttc": float(l.montant_ttc) if l.montant_ttc is not None else None,
+                "montant":       float(l.montant)       if l.montant       is not None else None,
+                "montant_ttc":   float(l.montant_ttc)   if l.montant_ttc   is not None else None,
+                "solde_facture": float(l.solde_facture)  if l.solde_facture is not None else None,
             }
             for l, f in rows
         ],
@@ -1514,7 +1515,7 @@ def export_vehicules_excel(
         ("imei",       "IMEI",             lambda r: r.imei or ""),
         ("forfait",    "Forfait",          lambda r: r.forfait if r.forfait is not None else ""),
         ("statut_sim", "Statut SIM",       lambda r: "Affecté" if r.sim_numero else "Non affecté"),
-        ("derniere_facture", "Dernière facture", lambda r: r.derniere_facture["montant_ttc"] if r.derniere_facture and r.derniere_facture.get("montant_ttc") is not None else ""),
+        ("derniere_facture", "Dernière facture (payé)", lambda r: r.derniere_facture["solde_facture"] if r.derniere_facture and r.derniere_facture.get("solde_facture") is not None else ""),
         ("created_at", "Date création",    lambda r: r.created_at.strftime("%d/%m/%Y") if r.created_at else ""),
     ]
     selected_keys = set(cols.split(",")) if cols else {c[0] for c in ALL_COLS}

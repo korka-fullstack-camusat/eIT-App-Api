@@ -139,10 +139,11 @@ def export_global(
             m.numero_serie or "",
             m.adresse_mac or "",
             m.reference or "",
-            m.etat or "",
+            m.etat.value if m.etat else "",
             STATUT_MAT.get(m.statut or "", m.statut or ""),
             m.date_acquisition.strftime("%d/%m/%Y") if m.date_acquisition else "",
-            f"{a.employee_prenom or ''} {a.employee_nom}".strip() if a else "",
+            f"{a.employee_prenom or ''} {a.employee_nom}".strip() if a
+            else f"{m.beneficiaire_prenom or ''} {m.beneficiaire_nom or ''}".strip(),
         ])
     _style_sheet(ws_mat, mat_cols, mat_rows)
 

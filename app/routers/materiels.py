@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, subqueryload
 from sqlalchemy import func
 from typing import Optional
 from datetime import date as dt_date
@@ -83,12 +83,21 @@ def create_materiel(data: MaterielCreate, db: Session = Depends(get_db), _: User
 # NOTE : toutes les routes statiques (export-excel, stats, import…) sont déclarées
 # AVANT /{materiel_id} pour éviter que FastAPI ne les capture comme un ID entier.
 
+@router.post("/import-update")
+def import_update_materiels(file: UploadFile = File(...), db: Session = Depends(get_db), _: User = Depends(require_editor)):
+    """Mise à jour en masse depuis un fichier Excel exporté (avec colonne ID)."""
+    content = file.file.read()
+    return _import_update_xlsx(content, db)
+
+
 @router.get("/export-excel")
 def export_materiels_excel_route(
     statut:        Optional[StatutMateriel] = Query(None),
     type_materiel: Optional[TypeMateriel]   = Query(None),
     etat:          Optional[EtatMateriel]   = Query(None),
     search:        Optional[str]            = Query(None),
+    projet:        Optional[str]            = Query(None),
+    assigne:       Optional[str]            = Query(None),
     date_debut:    Optional[dt_date]        = Query(None),
     date_fin:      Optional[dt_date]        = Query(None),
     cols:          Optional[str]            = Query(None),
@@ -97,7 +106,8 @@ def export_materiels_excel_route(
     """Proxy vers la logique d'export — défini ici pour précéder /{materiel_id}."""
     return export_materiels_excel(
         statut=statut, type_materiel=type_materiel, etat=etat,
-        search=search, date_debut=date_debut, date_fin=date_fin,
+        search=search, projet=projet, assigne=assigne,
+        date_debut=date_debut, date_fin=date_fin,
         cols=cols, db=db,
     )
 
@@ -131,6 +141,157 @@ def delete_materiel(materiel_id: int, db: Session = Depends(get_db), _: User = D
         raise HTTPException(400, "Impossible de supprimer un matériel attribué")
     db.delete(obj)
     db.commit()
+
+
+def _import_update_xlsx(content: bytes, db: Session):
+    import io, unicodedata, re
+    from datetime import datetime as dt_datetime
+    from openpyxl import load_workbook
+
+    TYPE_REVERSE = {
+        "PC Portable": "ORDINATEUR_PORTABLE", "PC Fixe": "ORDINATEUR_FIXE",
+        "Écran": "ECRAN", "Souris": "SOURIS", "Clavier": "CLAVIER",
+        "Téléphone": "TELEPHONE", "Imprimante": "IMPRIMANTE",
+        "Switch": "SWITCH", "Routeur": "ROUTEUR", "Onduleur": "ONDULEUR", "Autre": "AUTRE",
+        "Tablette": "TABLETTE", "AP": "AP", "Serveur": "SERVEUR", "Pare-feu": "PARE_FEU",
+    }
+    ETAT_REVERSE = {"NEUF": "NEUF", "BON": "BON", "USAGE": "USAGE", "DEFECTUEUX": "DEFECTUEUX"}
+    STATUT_REVERSE = {
+        "Disponible": "DISPONIBLE", "Attribué": "ATTRIBUE",
+        "Maintenance": "MAINTENANCE", "En panne": "EN_PANNE", "Réformé": "REFORME",
+    }
+
+    def norm(s) -> str:
+        s = unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode()
+        return re.sub(r"\s+", " ", s).strip().upper()
+
+    try:
+        wb = load_workbook(io.BytesIO(content), data_only=True)
+    except Exception:
+        raise HTTPException(400, "Fichier Excel illisible.")
+
+    ws = wb.active
+
+    # Trouver la ligne d'en-tête (celle qui contient "ID")
+    header_row_idx, headers = None, {}
+    for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=10, values_only=True), start=1):
+        normalized = [norm(str(v)) if v is not None else "" for v in row]
+        if "ID" in normalized:
+            header_row_idx = r_idx
+            headers = {h: c for c, h in enumerate(normalized) if h}
+            break
+    if header_row_idx is None:
+        raise HTTPException(400, "Colonne 'ID' introuvable — assurez-vous d'utiliser le fichier exporté depuis la plateforme.")
+
+    def get_col(row, *names):
+        for name in names:
+            idx = headers.get(name)
+            if idx is not None and idx < len(row):
+                v = row[idx]
+                if v not in (None, ""):
+                    return str(v).strip() if isinstance(v, str) else v
+        return None
+
+    updated, skipped, errors = 0, 0, []
+    for i, row in enumerate(ws.iter_rows(min_row=header_row_idx + 1, values_only=True), start=header_row_idx + 1):
+        if all(v is None for v in row):
+            continue
+        raw_id = get_col(row, "ID")
+        if raw_id is None:
+            skipped += 1
+            continue
+        try:
+            mat_id = int(float(str(raw_id)))
+        except (ValueError, TypeError):
+            errors.append({"ligne": i, "message": f"ID invalide : '{raw_id}'"})
+            continue
+
+        m = db.query(Materiel).filter(Materiel.id == mat_id).first()
+        if not m:
+            errors.append({"ligne": i, "message": f"Matériel ID {mat_id} introuvable"})
+            continue
+
+        # Type
+        type_raw = get_col(row, "TYPE")
+        if type_raw:
+            t = TYPE_REVERSE.get(type_raw)
+            if not t and "." in str(type_raw):
+                # Fallback pour l'ancien format enum : "TypeMateriel.TABLETTE" → "TABLETTE"
+                enum_val = str(type_raw).split(".")[-1]
+                try:
+                    TypeMateriel(enum_val)  # valide que la valeur existe
+                    t = enum_val
+                except ValueError:
+                    pass
+            if t:
+                m.type_materiel = TypeMateriel(t)
+            else:
+                errors.append({"ligne": i, "message": f"ID {mat_id} — Type inconnu : '{type_raw}' (ignoré)"})
+
+        # Champs texte simples
+        marque = get_col(row, "MARQUE")
+        if marque:
+            m.marque = str(marque)[:100]
+
+        modele = get_col(row, "MODELE", "MODÈLE")
+        if modele is not None:
+            m.modele = str(modele)[:150] or None
+
+        serie = get_col(row, "N SERIE", "N° SERIE", "NSERIE")
+        if serie is not None:
+            existing = db.query(Materiel.id).filter(
+                Materiel.numero_serie == str(serie), Materiel.id != mat_id
+            ).first()
+            if existing:
+                errors.append({"ligne": i, "message": f"ID {mat_id} — N° série '{serie}' déjà utilisé (ignoré)"})
+            else:
+                m.numero_serie = str(serie)[:100] or None
+
+        mac = get_col(row, "ADRESSE MAC", "ADRESSEMAX")
+        if mac is not None:
+            m.adresse_mac = str(mac)[:50] or None
+
+        ref = get_col(row, "REFERENCE", "RÉFÉRENCE")
+        if ref is not None:
+            m.reference = str(ref)[:100] or None
+
+        po = get_col(row, "N PO", "N° PO", "NPO")
+        if po is not None:
+            m.numero_bon_cmd = str(po)[:100] or None
+
+        # État
+        etat_raw = get_col(row, "ETAT", "ÉTAT")
+        if etat_raw:
+            etat_str = str(etat_raw).split(".")[-1]  # gère "EtatMateriel.BON" → "BON"
+            ev = ETAT_REVERSE.get(norm(etat_str))
+            if ev:
+                m.etat = EtatMateriel(ev)
+
+        # Statut
+        statut_raw = get_col(row, "STATUT")
+        if statut_raw:
+            statut_str = str(statut_raw).split(".")[-1]  # gère "StatutMateriel.DISPONIBLE" → "DISPONIBLE"
+            sv = STATUT_REVERSE.get(statut_str.strip()) or STATUT_REVERSE.get(statut_raw.strip())
+            if sv:
+                m.statut = StatutMateriel(sv)
+
+        # Date acquisition
+        date_raw = get_col(row, "DATE ACQUISITION", "DATEACQUISITION")
+        if date_raw:
+            if hasattr(date_raw, "date"):
+                m.date_acquisition = date_raw.date()
+            elif isinstance(date_raw, str):
+                for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
+                    try:
+                        m.date_acquisition = dt_datetime.strptime(date_raw, fmt).date()
+                        break
+                    except ValueError:
+                        pass
+
+        updated += 1
+
+    db.commit()
+    return {"updated": updated, "skipped": skipped, "errors": errors}
 
 
 @router.post("/import")
@@ -384,6 +545,8 @@ def export_materiels_excel(
     date_fin:      Optional[dt_date],
     cols:          Optional[str],
     db,
+    projet:        Optional[str] = None,
+    assigne:       Optional[str] = None,
 ):
     """Génère un fichier Excel stylisé avec en-têtes bleus."""
     import io
@@ -394,10 +557,11 @@ def export_materiels_excel(
     from openpyxl.utils import get_column_letter
 
     # ── Requête ──────────────────────────────────────────────────────────────────
-    q = db.query(Materiel).options(joinedload(Materiel.attributions))
+    q = db.query(Materiel).options(subqueryload(Materiel.attributions))
     if statut:        q = q.filter(Materiel.statut == statut)
     if type_materiel: q = q.filter(Materiel.type_materiel == type_materiel)
     if etat:          q = q.filter(Materiel.etat == etat)
+    if projet:        q = q.filter(Materiel.projet == projet)
     if search:
         term = f"%{search}%"
         q = q.outerjoin(
@@ -411,6 +575,13 @@ def export_materiels_excel(
             Attribution.employee_nom.ilike(term) | Attribution.employee_prenom.ilike(term)
         ).distinct()
     materiels = q.order_by(Materiel.marque).all()
+
+    # Filtre "Assigné" côté Python (comme la route liste)
+    if assigne in ("OUI", "NON"):
+        def is_assigned(m):
+            active = next((a for a in m.attributions if a.statut == StatutAttribution.ACTIVE), None)
+            return bool(active or m.beneficiaire_nom or m.beneficiaire_prenom)
+        materiels = [m for m in materiels if (assigne == "OUI") == is_assigned(m)]
 
     # Filtre date côté Python (date_acquisition peut être null)
     if date_debut:
@@ -427,6 +598,7 @@ def export_materiels_excel(
         "ECRAN": "Écran", "SOURIS": "Souris", "CLAVIER": "Clavier",
         "TELEPHONE": "Téléphone", "IMPRIMANTE": "Imprimante",
         "SWITCH": "Switch", "ROUTEUR": "Routeur", "ONDULEUR": "Onduleur", "AUTRE": "Autre",
+        "TABLETTE": "Tablette", "AP": "AP", "SERVEUR": "Serveur", "PARE_FEU": "Pare-feu",
     }
     STATUT_LABELS = {
         "DISPONIBLE": "Disponible", "ATTRIBUE": "Attribué",
@@ -436,17 +608,20 @@ def export_materiels_excel(
     # ── Définition des colonnes ───────────────────────────────────────────────
     ALL_COLS = [
         ("id",          "ID",               lambda m, a: m.id),
-        ("type",        "Type",             lambda m, a: TYPE_LABELS.get(m.type_materiel, m.type_materiel)),
+        ("type",        "Type",             lambda m, a: TYPE_LABELS.get(m.type_materiel, m.type_materiel.value if m.type_materiel else "")),
         ("marque",      "Marque",           lambda m, a: m.marque or ""),
         ("modele",      "Modèle",           lambda m, a: m.modele or ""),
         ("serie",       "N° Série",         lambda m, a: m.numero_serie or ""),
         ("mac",         "Adresse MAC",      lambda m, a: m.adresse_mac or ""),
         ("reference",   "Référence",        lambda m, a: m.reference or ""),
         ("po",          "N° PO",            lambda m, a: m.numero_bon_cmd or ""),
-        ("etat",        "État",             lambda m, a: m.etat or ""),
+        ("etat",        "État",             lambda m, a: m.etat.value if m.etat else ""),
         ("statut",      "Statut",           lambda m, a: STATUT_LABELS.get(m.statut, m.statut or "")),
         ("acquisition", "Date Acquisition", lambda m, a: m.date_acquisition.strftime("%d/%m/%Y") if m.date_acquisition else ""),
-        ("assigne",     "Assigné à",        lambda m, a: f"{a.employee_prenom or ''} {a.employee_nom}".strip() if a else ""),
+        ("assigne",     "Assigné à",        lambda m, a: (
+            f"{a.employee_prenom or ''} {a.employee_nom}".strip() if a
+            else f"{m.beneficiaire_prenom or ''} {m.beneficiaire_nom or ''}".strip()
+        )),
     ]
 
     selected_keys = set(cols.split(",")) if cols else {c[0] for c in ALL_COLS}
