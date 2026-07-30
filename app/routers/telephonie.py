@@ -46,8 +46,7 @@ def list_sims(
         ).distinct()
     sims = q.order_by(NumeroSIM.numero).all()
 
-    type_ligne = "MOBILE" if categorie == CategorieSimEnum.EMPLOYE else None
-    fact_map = _latest_facture_map(db, type_ligne=type_ligne)
+    fact_map = _latest_facture_map(db)
     result = []
     for s in sims:
         item = NumeroSIMOut.model_validate(s)
@@ -309,6 +308,7 @@ def update_sim(sim_id: int, data: NumeroSIMUpdate, db: Session = Depends(get_db)
 def delete_sim(sim_id: int, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(NumeroSIM).filter(NumeroSIM.id == sim_id).first()
     if not obj: raise HTTPException(404, "SIM introuvable")
+    db.query(LigneFacture).filter(LigneFacture.sim_id == sim_id).delete()
     db.query(AffectationSIM).filter(AffectationSIM.sim_id == sim_id).delete()
     db.delete(obj); db.commit()
 
@@ -389,28 +389,19 @@ def _site_sim_map(db: Session) -> dict:
 
 
 def _latest_facture_map(db: Session, type_ligne: Optional[str] = None) -> dict:
-    """Retourne un dict {sim_id: {mois, annee, operateur, montant_ttc}} correspondant
-    à la facture la plus récente (mois/année) reconnue pour chaque numéro SIM.
-
-    Si `type_ligne` est fourni, ne considère que les lignes de facture dont le
-    `type_ligne` correspond (ex: "MOBILE" pour les numéros employés)."""
     from sqlalchemy import func as _func
 
-    base = db.query(LigneFacture).filter(LigneFacture.sim_id.isnot(None))
-    if type_ligne:
-        base = base.filter(LigneFacture.type_ligne == type_ligne)
-    base_ids = base.with_entities(LigneFacture.id).subquery()
-
-    latest_sub = (
+    lf_q = (
         db.query(
             LigneFacture.sim_id.label("sim_id"),
             _func.max(FactureTelecom.annee * 100 + FactureTelecom.mois).label("ym"),
         )
         .join(FactureTelecom, LigneFacture.facture_id == FactureTelecom.id)
-        .filter(LigneFacture.id.in_(base_ids))
-        .group_by(LigneFacture.sim_id)
-        .subquery()
+        .filter(LigneFacture.sim_id.isnot(None))
     )
+    if type_ligne:
+        lf_q = lf_q.filter(LigneFacture.type_ligne == type_ligne)
+    latest_sub = lf_q.group_by(LigneFacture.sim_id).subquery()
 
     q = (
         db.query(LigneFacture, FactureTelecom)
@@ -422,6 +413,7 @@ def _latest_facture_map(db: Session, type_ligne: Optional[str] = None) -> dict:
                 (FactureTelecom.annee * 100 + FactureTelecom.mois) == latest_sub.c.ym,
             ),
         )
+        .filter(LigneFacture.sim_id.isnot(None))
     )
     if type_ligne:
         q = q.filter(LigneFacture.type_ligne == type_ligne)
@@ -431,7 +423,11 @@ def _latest_facture_map(db: Session, type_ligne: Optional[str] = None) -> dict:
             "mois":        f.mois,
             "annee":       f.annee,
             "operateur":   f.operateur,
-            "solde_facture": float(l.solde_facture) if l.solde_facture is not None else None,
+            "solde_facture": float(
+                l.solde_facture if l.solde_facture is not None
+                else l.montant_ttc if l.montant_ttc is not None
+                else l.montant
+            ),
         }
         for l, f in rows
     }
@@ -1395,6 +1391,7 @@ def update_site(site_id: int, data: SiteGSMCreate, db: Session = Depends(get_db)
 def delete_site(site_id: int, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(SiteGSM).filter(SiteGSM.id == site_id).first()
     if not obj: raise HTTPException(404, "Site introuvable")
+    db.query(AffectationSIM).filter(AffectationSIM.site_id == site_id).delete()
     db.delete(obj); db.commit()
 
 
@@ -1420,7 +1417,7 @@ def _vehicule_sim_map(db: Session) -> dict:
 def list_vehicules(db: Session = Depends(get_db)):
     vehicules = db.query(Vehicule).order_by(Vehicule.immatriculation).all()
     sim_map   = _vehicule_sim_map(db)
-    fact_map  = _latest_facture_map(db, type_ligne="GPS")
+    fact_map  = _latest_facture_map(db)
     result = []
     for v in vehicules:
         item = VehiculeOut.model_validate(v)
@@ -1700,4 +1697,5 @@ def update_vehicule(vehicule_id: int, data: VehiculeCreate, db: Session = Depend
 def delete_vehicule(vehicule_id: int, db: Session = Depends(get_db), _: User = Depends(require_editor)):
     obj = db.query(Vehicule).filter(Vehicule.id == vehicule_id).first()
     if not obj: raise HTTPException(404, "Véhicule introuvable")
+    db.query(AffectationSIM).filter(AffectationSIM.vehicule_id == vehicule_id).delete()
     db.delete(obj); db.commit()
