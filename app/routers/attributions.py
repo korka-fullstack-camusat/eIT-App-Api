@@ -9,7 +9,7 @@ from ..database import get_db
 from ..models.attribution import Attribution, StatutAttribution
 from ..models.materiel import Materiel, StatutMateriel
 from ..schemas.attribution import AttributionCreate, AttributionOut, RestitutionCreate
-from ..services.pdf_service import generate_decharge_pdf, generate_attestation_pdf
+from ..services.pdf_service import generate_decharge_pdf, generate_attestation_pdf, generate_recuperation_pdf
 from ..models.user import User
 from ..services.auth_service import require_editor
 
@@ -86,6 +86,145 @@ def create_attribution(data: AttributionCreate, db: Session = Depends(get_db), _
 
 
 # ── Routes statiques déclarées AVANT /{attribution_id} ───────────────────────
+
+class BulkAssignPayload(BaseModel):
+    materiel_ids:       list[int]
+    employee_id:        int
+    employee_nom:       str
+    employee_prenom:    Optional[str] = None
+    employee_matricule: Optional[str] = None
+    employee_service:   Optional[str] = None
+    employee_poste:     Optional[str] = None
+    date_attribution:   date
+    etat_remise:        Optional[str] = None
+    notes:              Optional[str] = None
+
+
+@router.post("/bulk", status_code=201)
+def create_bulk_attribution(
+    data: BulkAssignPayload,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_editor),
+):
+    """Assigne plusieurs matériels à un même employé en une seule opération."""
+    import io
+    created = []
+    errors  = []
+    for mid in data.materiel_ids:
+        materiel = db.query(Materiel).filter(Materiel.id == mid).first()
+        if not materiel:
+            errors.append({"materiel_id": mid, "message": "Matériel introuvable"}); continue
+        if materiel.statut != StatutMateriel.DISPONIBLE:
+            errors.append({"materiel_id": mid, "message": f"Statut {materiel.statut.value} — non disponible"}); continue
+        obj = Attribution(
+            materiel_id        = mid,
+            employee_id        = data.employee_id,
+            employee_nom       = data.employee_nom,
+            employee_prenom    = data.employee_prenom,
+            employee_matricule = data.employee_matricule,
+            employee_service   = data.employee_service,
+            employee_poste     = data.employee_poste,
+            date_attribution   = data.date_attribution,
+            etat_remise        = data.etat_remise,
+            notes              = data.notes,
+        )
+        materiel.statut = StatutMateriel.ATTRIBUE
+        db.add(obj)
+        created.append(obj)
+
+    db.commit()
+    for obj in created:
+        db.refresh(obj)
+
+    if not created:
+        return {"created": 0, "errors": errors}
+
+    attrs_with_mat = (
+        db.query(Attribution)
+        .options(joinedload(Attribution.materiel))
+        .filter(Attribution.id.in_([o.id for o in created]))
+        .all()
+    )
+
+    from ..services.template_service import template_exists, generate_attestation_from_template
+    nom = f"{data.employee_prenom or ''} {data.employee_nom}".strip().replace(" ", "_")
+    if template_exists("attestation"):
+        doc_bytes = generate_attestation_from_template(attrs_with_mat)
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename   = f"attestation_{nom}.docx"
+    else:
+        doc_bytes  = generate_attestation_pdf(attrs_with_mat)
+        media_type = "application/pdf"
+        filename   = f"attestation_{nom}.pdf"
+
+    return StreamingResponse(
+        io.BytesIO(doc_bytes),
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "X-Created": str(len(created)),
+            "X-Errors":  str(len(errors)),
+        },
+    )
+
+
+class BulkRecuperationPayload(BaseModel):
+    attribution_ids:   list[int]
+    date_restitution:  date
+    motif_restitution: str = "CHANGEMENT"
+    notes_restitution: Optional[str] = None
+
+
+@router.post("/bulk-recuperation")
+def bulk_recuperation(
+    data: BulkRecuperationPayload,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_editor),
+):
+    """Clôture plusieurs attributions (même employé) et génère le PDF de récupération."""
+    import io
+    attrs = (
+        db.query(Attribution)
+        .options(joinedload(Attribution.materiel))
+        .filter(Attribution.id.in_(data.attribution_ids))
+        .all()
+    )
+    if not attrs:
+        raise HTTPException(404, "Aucune attribution trouvée")
+
+    for obj in attrs:
+        if obj.statut == StatutAttribution.CLOTUREE:
+            continue
+        obj.date_restitution  = data.date_restitution
+        obj.motif_restitution = data.motif_restitution
+        obj.notes_restitution = data.notes_restitution
+        obj.statut            = StatutAttribution.CLOTUREE
+        if obj.materiel:
+            obj.materiel.statut = StatutMateriel.DISPONIBLE
+
+    db.commit()
+
+    active = [o for o in attrs if o.materiel]
+    if not active:
+        raise HTTPException(400, "Aucun matériel trouvé dans les attributions")
+
+    from ..services.template_service import template_exists, generate_recuperation_from_template
+    nom = f"{active[0].employee_prenom or ''} {active[0].employee_nom}".strip().replace(" ", "_")
+    if template_exists("recuperation"):
+        doc_bytes  = generate_recuperation_from_template(active, date_recuperation=data.date_restitution)
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename   = f"recuperation_{nom}.docx"
+    else:
+        doc_bytes  = generate_recuperation_pdf(active, date_recuperation=data.date_restitution)
+        media_type = "application/pdf"
+        filename   = f"recuperation_{nom}.pdf"
+
+    return StreamingResponse(
+        io.BytesIO(doc_bytes),
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
 
 @router.get("/export-excel")
 def export_attributions_excel_proxy(

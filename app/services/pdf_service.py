@@ -25,10 +25,14 @@ TYPE_LABELS = {
     "SOURIS":              ("Une souris",               "f"),
     "CLAVIER":             ("Un clavier",               "m"),
     "TELEPHONE":           ("Un téléphone portable",    "m"),
+    "TABLETTE":            ("Une tablette",             "f"),
     "IMPRIMANTE":          ("Une imprimante",           "f"),
     "SWITCH":              ("Un switch réseau",         "m"),
     "ROUTEUR":             ("Un routeur",               "m"),
     "ONDULEUR":            ("Un onduleur",              "m"),
+    "AP":                  ("Un point d'accès",         "m"),
+    "SERVEUR":             ("Un serveur",               "m"),
+    "PARE_FEU":            ("Un pare-feu",              "m"),
     "AUTRE":               ("Un matériel informatique", "m"),
 }
 
@@ -321,6 +325,114 @@ def generate_decharge_pdf(attribution) -> bytes:
         f"<font size=8 color='grey'>Généré le {datetime.date.today()} — Camusat Sénégal Direction IT</font>",
         ParagraphStyle("footer", alignment=1),
     ))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ATTESTATION DE RÉCUPÉRATION (1 ou N matériels d'un même employé)
+# ═══════════════════════════════════════════════════════════════════════════════
+def generate_recuperation_pdf(attributions: list, date_recuperation=None) -> bytes:
+    if not attributions:
+        raise ValueError("Aucune attribution fournie")
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=2.5 * cm, rightMargin=2.5 * cm,
+        topMargin=2 * cm, bottomMargin=2.5 * cm,
+    )
+
+    st   = _build_styles()
+    ref  = attributions[0]
+    today = date_recuperation or datetime.date.today()
+
+    story = []
+
+    header_data = [[
+        Paragraph(
+            "<b>CAMUSAT SENEGAL</b><br/>"
+            "00 (221) 33 865 10 01<br/>"
+            "contact@camusat.com<br/>"
+            "www.camusat.com",
+            st["header_co"],
+        ),
+        Paragraph(
+            "10083 Sacré Cœur 3, VDN - Immeuble<br/>"
+            "Sourok 9 - 1er Etage, Dakar BP 45923,<br/>"
+            "Sénégal",
+            st["header_addr"],
+        ),
+    ]]
+    ht = Table(header_data, colWidths=[9 * cm, 8 * cm])
+    ht.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"), ("PADDING", (0, 0), (-1, -1), 0)]))
+    story.append(ht)
+    story.append(Spacer(1, 0.3 * cm))
+    story.append(HRFlowable(width="100%", thickness=2, color=RED,  spaceAfter=1))
+    story.append(HRFlowable(width="100%", thickness=1, color=BLUE, spaceAfter=8))
+    story.append(Spacer(1, 0.4 * cm))
+
+    story.append(Paragraph(
+        f"Date, le {today.strftime('%d/%m/%Y') if hasattr(today, 'strftime') else today}",
+        st["date_style"],
+    ))
+    story.append(Spacer(1, 0.3 * cm))
+
+    story.append(Paragraph(
+        "<u><b>Objet</b></u> : Attestation de récupération de matériels informatiques",
+        st["objet_style"],
+    ))
+    story.append(Spacer(1, 0.3 * cm))
+
+    nom_complet = f"{ref.employee_prenom or ''} {ref.employee_nom}".strip()
+    story.append(Paragraph(
+        f"Je soussigné(e) <b>Libasse SARR</b>, Assistant Informatique, certifie avoir récupéré "
+        f"les matériels suivants de <b>{nom_complet}</b> :",
+        st["body_style"],
+    ))
+    story.append(Spacer(1, 0.2 * cm))
+
+    bullet_items = [
+        ListItem(
+            Paragraph(_mat_description(a.materiel), st["bullet_style"]),
+            bulletColor=BLUE, bulletType="bullet", leftIndent=20, bulletFontSize=12,
+        )
+        for a in attributions if a.materiel
+    ]
+    story.append(ListFlowable(bullet_items, bulletType="bullet", leftIndent=10))
+    story.append(Spacer(1, 0.5 * cm))
+
+    story.append(Paragraph(
+        "Le(s) matériel(s) susvisé(s) a/ont été restitué(s) et réintégré(s) au stock du parc informatique de CAMUSAT SENEGAL.",
+        st["body_style"],
+    ))
+    story.append(Paragraph(
+        "Nous vous remercions de votre collaboration.",
+        st["body_style"],
+    ))
+    story.append(Spacer(1, 1.2 * cm))
+
+    sig_data = [[
+        Paragraph("L'intéressé(e) :", st["sig_label"]),
+        Paragraph("L'Assistant Informatique", st["sig_label"]),
+    ]]
+    sig_table = Table(sig_data, colWidths=[8.5 * cm, 8.5 * cm])
+    sig_table.setStyle(TableStyle([
+        ("VALIGN",        (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 50),
+    ]))
+    story.append(sig_table)
+
+    name_data = [["", Paragraph("Libasse SARR", st["sig_name"])]]
+    name_table = Table(name_data, colWidths=[8.5 * cm, 8.5 * cm])
+    name_table.setStyle(TableStyle([("PADDING", (0, 0), (-1, -1), 0)]))
+    story.append(name_table)
+
+    story.append(Spacer(1, 1 * cm))
+    story.append(HRFlowable(width="100%", thickness=2, color=RED,  spaceAfter=1))
+    story.append(HRFlowable(width="100%", thickness=1, color=BLUE, spaceAfter=6))
 
     doc.build(story)
     return buf.getvalue()

@@ -10,6 +10,7 @@ from ..models.attribution import Attribution, StatutAttribution
 from ..services.template_service import (
     save_template, scan_placeholders, template_exists,
     generate_attestation_from_template, generate_decharge_from_template,
+    generate_recuperation_from_template,
     TEMPLATE_PATHS,
 )
 from ..models.user import User
@@ -17,7 +18,7 @@ from ..services.auth_service import require_editor
 
 router = APIRouter(prefix="/api/templates", tags=["Templates"])
 
-DOC_TYPES = {"attestation", "decharge"}
+DOC_TYPES = {"attestation", "decharge", "recuperation"}
 
 
 @router.post("/{doc_type}/upload")
@@ -42,6 +43,20 @@ async def upload_template(doc_type: str, file: UploadFile = File(...), _: User =
     }
 
 
+def _extract_text(content: bytes) -> str:
+    """Extrait le texte brut d'un .docx (paragraphes et tableaux)."""
+    import io
+    from docx import Document as _Doc
+    doc = _Doc(io.BytesIO(content))
+    lines = []
+    for para in doc.paragraphs:
+        lines.append(para.text)
+    for table in doc.tables:
+        for row in table.rows:
+            lines.append("  |  ".join(cell.text for cell in row.cells))
+    return "\n".join(lines)
+
+
 @router.get("/info")
 def get_templates_info():
     """Retourne l'état des templates uploadés et leurs balises détectées."""
@@ -53,13 +68,18 @@ def get_templates_info():
                 placeholders = scan_placeholders(content)
             except Exception:
                 placeholders = []
+            try:
+                text = _extract_text(content)
+            except Exception:
+                text = ""
             result[doc_type] = {
                 "uploaded":     True,
                 "size_kb":      round(path.stat().st_size / 1024, 1),
                 "placeholders": placeholders,
+                "text":         text,
             }
         else:
-            result[doc_type] = {"uploaded": False, "placeholders": []}
+            result[doc_type] = {"uploaded": False, "placeholders": [], "text": ""}
     return result
 
 
