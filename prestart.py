@@ -6,6 +6,8 @@ import time
 import sqlalchemy
 from app.database import Base, engine, SessionLocal
 from app.models import Materiel, Attribution, NumeroSIM, SiteGSM, Vehicule, AffectationSIM, FactureTelecom, LigneFacture, User, ImportGlobalLog, ExportLog
+from app.models.planning import Tache  # noqa: F401
+from app.models.licence import Licence, LicenceAttribution  # noqa: F401
 from app.services.auth_service import hash_password
 
 print("→ Attente de la base de données...")
@@ -93,6 +95,46 @@ with engine.connect() as conn:
         "ALTER TYPE typemateriel ADD VALUE IF NOT EXISTS 'AP'",
         "ALTER TYPE typemateriel ADD VALUE IF NOT EXISTS 'SERVEUR'",
         "ALTER TYPE typemateriel ADD VALUE IF NOT EXISTS 'PARE_FEU'",
+        # Planning journalier
+        """CREATE TABLE IF NOT EXISTS taches (
+            id SERIAL PRIMARY KEY,
+            titre VARCHAR(200) NOT NULL,
+            description TEXT,
+            date_planifiee DATE NOT NULL,
+            date_fin DATE,
+            statut VARCHAR(20) NOT NULL DEFAULT 'A_FAIRE',
+            priorite VARCHAR(20) NOT NULL DEFAULT 'NORMALE',
+            responsable VARCHAR(150),
+            notes TEXT,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )""",
+        # Licences logicielles
+        """CREATE TABLE IF NOT EXISTS licences (
+            id SERIAL PRIMARY KEY,
+            logiciel VARCHAR(200) NOT NULL,
+            editeur VARCHAR(150),
+            version VARCHAR(50),
+            cle_licence VARCHAR(255),
+            date_achat DATE,
+            date_expiration DATE,
+            nb_postes_max INTEGER,
+            notes TEXT,
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )""",
+        """CREATE TABLE IF NOT EXISTS licence_attributions (
+            id SERIAL PRIMARY KEY,
+            licence_id INTEGER NOT NULL REFERENCES licences(id) ON DELETE CASCADE,
+            employee_nom VARCHAR(150) NOT NULL,
+            employee_prenom VARCHAR(150),
+            employee_matricule VARCHAR(50),
+            employee_service VARCHAR(150),
+            materiel_id INTEGER,
+            date_attribution DATE NOT NULL,
+            notes TEXT,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )""",
     ]
     for sql in migrations:
         try:

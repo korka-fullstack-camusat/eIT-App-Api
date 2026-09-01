@@ -49,6 +49,133 @@ def attribution_stats(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/suivi-employes")
+def suivi_employes(
+    date_debut:  Optional[date] = Query(None),
+    date_fin:    Optional[date] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Agrège les assignations par employé en combinant :
+    - les matériels dont beneficiaire_nom est renseigné (source principale)
+    - les attributions formelles de la table attributions
+    """
+    employes: dict[str, dict] = {}
+
+    def _emp_key(nom: str, prenom: str, matricule: str = "") -> str:
+        """Clé unique normalisée sur nom+prénom (insensible à la casse)."""
+        return f"{(nom or '').strip().lower()}|{(prenom or '').strip().lower()}"
+
+    # ── Source 1 : champs beneficiaire_* des matériels ────────────────────────
+    mat_q = db.query(Materiel).filter(Materiel.beneficiaire_nom.isnot(None))
+    if date_debut: mat_q = mat_q.filter(Materiel.date_acquisition >= date_debut)
+    if date_fin:   mat_q = mat_q.filter(Materiel.date_acquisition <= date_fin)
+    for m in mat_q.all():
+        key = _emp_key(m.beneficiaire_nom or "", m.beneficiaire_prenom or "", m.beneficiaire_matricule or "")
+        if key not in employes:
+            employes[key] = {
+                "matricule": m.beneficiaire_matricule or "",
+                "nom":       (m.beneficiaire_nom or "").strip(),
+                "prenom":    (m.beneficiaire_prenom or "").strip(),
+                "service":   "",
+                "materiels": [],
+            }
+        employes[key]["materiels"].append({
+            "id":               m.id,
+            "statut":           "ACTIVE" if m.statut == "ATTRIBUE" else str(m.statut).split(".")[-1],
+            "date_attribution": m.date_acquisition.isoformat() if m.date_acquisition else None,
+            "date_restitution": None,
+            "type":             str(m.type_materiel).split(".")[-1],
+            "marque":           m.marque,
+            "modele":           m.modele or "",
+            "numero_serie":     m.numero_serie or "",
+            "statut_materiel":  str(m.statut).split(".")[-1],
+        })
+
+    # ── Source 2 : table attributions formelles ───────────────────────────────
+    attr_q = db.query(Attribution).options(joinedload(Attribution.materiel))
+    if date_debut: attr_q = attr_q.filter(Attribution.date_attribution >= date_debut)
+    if date_fin:   attr_q = attr_q.filter(Attribution.date_attribution <= date_fin)
+    for a in attr_q.order_by(Attribution.date_attribution.desc()).all():
+        key = _emp_key(a.employee_nom or "", a.employee_prenom or "", a.employee_matricule or "")
+        if key not in employes:
+            employes[key] = {
+                "matricule": a.employee_matricule or "",
+                "nom":       a.employee_nom or "",
+                "prenom":    a.employee_prenom or "",
+                "service":   a.employee_service or "",
+                "materiels": [],
+            }
+        # enrichir le service si absent
+        if not employes[key]["service"] and a.employee_service:
+            employes[key]["service"] = a.employee_service
+        mat = a.materiel
+        # éviter doublon si ce matériel est déjà présent via beneficiaire
+        already = any(x["id"] == mat.id for x in employes[key]["materiels"]) if mat else False
+        if not already:
+            employes[key]["materiels"].append({
+                "id":               a.id,
+                "statut":           str(a.statut).split(".")[-1],
+                "date_attribution": a.date_attribution.isoformat() if a.date_attribution else None,
+                "date_restitution": a.date_restitution.isoformat() if a.date_restitution else None,
+                "type":             str(mat.type_materiel).split(".")[-1] if mat else "",
+                "marque":           mat.marque if mat else "",
+                "modele":           mat.modele or "" if mat else "",
+                "numero_serie":     mat.numero_serie or "" if mat else "",
+                "statut_materiel":  str(mat.statut).split(".")[-1] if mat else "",
+            })
+
+    result = []
+    for emp in employes.values():
+        mats = emp.pop("materiels", [])
+        emp["attributions"] = mats
+        emp["nb_actifs"]    = sum(1 for m in mats if m["statut"] == "ACTIVE")
+        emp["nb_total"]     = len(mats)
+        result.append(emp)
+
+    return sorted(result, key=lambda e: (e.get("service", ""), e.get("nom", "")))
+
+
+@router.get("/materiels-en-refection")
+def materiels_en_refection(db: Session = Depends(get_db)):
+    """Retourne les matériels EN_PANNE ou MAINTENANCE avec leur dernier/actuel attributaire."""
+    from ..models.materiel import StatutMateriel as SM
+    from sqlalchemy import desc
+    materiels = (
+        db.query(Materiel)
+        .filter(Materiel.statut.in_([SM.EN_PANNE, SM.MAINTENANCE]))
+        .order_by(Materiel.statut.asc())
+        .all()
+    )
+    result = []
+    for m in materiels:
+        # Priorité : champ beneficiaire_* du matériel (source principale)
+        if m.beneficiaire_nom:
+            dernier = f"{m.beneficiaire_prenom or ''} {m.beneficiaire_nom}".strip()
+            date_attr = m.date_acquisition.isoformat() if m.date_acquisition else None
+        else:
+            last_attr = (
+                db.query(Attribution)
+                .filter(Attribution.materiel_id == m.id)
+                .order_by(desc(Attribution.date_attribution))
+                .first()
+            )
+            dernier = f"{last_attr.employee_prenom or ''} {last_attr.employee_nom}".strip() if last_attr else None
+            date_attr = last_attr.date_attribution.isoformat() if last_attr and last_attr.date_attribution else None
+        result.append({
+            "id":           m.id,
+            "type":         m.type_materiel,
+            "marque":       m.marque,
+            "modele":       m.modele or "",
+            "numero_serie": m.numero_serie or "",
+            "statut":       m.statut,
+            "etat":         m.etat,
+            "dernier_attributaire": dernier,
+            "date_attribution": date_attr,
+        })
+    return result
+
+
 @router.get("/", response_model=list[AttributionOut])
 def list_attributions(
     employee_id: Optional[int] = None,
@@ -100,7 +227,7 @@ class BulkAssignPayload(BaseModel):
     notes:              Optional[str] = None
 
 
-@router.post("/bulk", status_code=201)
+@router.post("/bulk")
 def create_bulk_attribution(
     data: BulkAssignPayload,
     db: Session = Depends(get_db),
