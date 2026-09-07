@@ -70,3 +70,13 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
             detail="Action réservée aux administrateurs.",
         )
     return current_user
+
+
+def require_directeur(current_user: User = Depends(get_current_user)) -> User:
+    """Réservé au rôle DIRECTEUR (et ADMIN) — validation des demandes."""
+    if current_user.role not in ("DIRECTEUR", "ADMIN"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Action réservée au Directeur.",
+        )
+    return current_user
