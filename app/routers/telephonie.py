@@ -492,6 +492,34 @@ def sims_stats_mensuel(mois: int, annee: int, categorie: Optional[CategorieSimEn
     return _sims_total_for_period(db, mois, annee, categorie)
 
 
+@router.get("/sims/stats/mensuel-detail")
+def sims_stats_mensuel_detail(mois: int, annee: int, categorie: Optional[CategorieSimEnum] = None, db: Session = Depends(get_db)):
+    """Coût et nombre de SIM facturées pour un mois/année, ventilés par statut."""
+    from sqlalchemy import func as _func
+    montant_expr = _func.coalesce(LigneFacture.montant_ttc, LigneFacture.montant)
+    q = (
+        db.query(
+            NumeroSIM.statut,
+            _func.count(LigneFacture.id),
+            _func.coalesce(_func.sum(montant_expr), 0),
+        )
+        .join(LigneFacture, LigneFacture.sim_id == NumeroSIM.id)
+        .join(FactureTelecom, LigneFacture.facture_id == FactureTelecom.id)
+        .filter(FactureTelecom.mois == mois, FactureTelecom.annee == annee)
+    )
+    if categorie:
+        q = q.filter(NumeroSIM.categorie == categorie)
+    rows = q.group_by(NumeroSIM.statut).all()
+    par_statut = {r[0].value: {"count": int(r[1]), "montant": float(r[2])} for r in rows}
+    total_count  = sum(v["count"]   for v in par_statut.values())
+    total_montant = sum(v["montant"] for v in par_statut.values())
+    return {
+        "mois": mois, "annee": annee,
+        "total_count": total_count, "total_montant": total_montant,
+        "par_statut": par_statut,
+    }
+
+
 @router.get("/sims/stats/ecart")
 def sims_stats_ecart(
     mois1: int, annee1: int, mois2: int, annee2: int,
