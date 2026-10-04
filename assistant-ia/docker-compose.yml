@@ -1,0 +1,10 @@
+services:
+  assistant:
+    build: .
+    env_file: .env
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./logs:/app/logs                     # journal d'audit
+      - ./sources.yaml:/app/sources.yaml:ro  # modifier les sources sans reconstruire l'image
+    restart: unless-stopped

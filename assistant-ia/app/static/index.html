@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assistant IA Camusat</title>
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d6677;
+    --border: #dfe3ea; --accent: #c8102e; --accent-text: #ffffff;
+    --user-bg: #1d2330; --user-text: #ffffff; --chip: #eef1f5; --code: #f1f3f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1b1f27; --text: #e7eaf0; --muted: #9aa3b2;
+      --border: #2c323d; --accent: #ef4056; --accent-text: #ffffff;
+      --user-bg: #2c3442; --user-text: #ffffff; --chip: #252b35; --code: #232833;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 17px; margin: 0; font-weight: 650; }
+  header .logo { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); color: var(--accent-text); display: grid; place-items: center; font-weight: 700; }
+  #sources { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+  .pill { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: var(--chip); color: var(--muted); }
+  .pill.ok::before { content: "●"; color: #1f9d55; margin-right: 5px; }
+  .pill.off::before { content: "●"; color: #9aa3b2; margin-right: 5px; }
+  button { font: inherit; cursor: pointer; }
+  .btn { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 8px; padding: 6px 12px; }
+  .btn:hover { border-color: var(--muted); }
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  main { flex: 1; overflow-y: auto; }
+  #log { max-width: 900px; margin: 0 auto; padding: 24px 16px 8px; display: flex; flex-direction: column; gap: 18px; }
+  .msg { max-width: 100%; }
+  .msg.user { align-self: flex-end; background: var(--user-bg); color: var(--user-text); padding: 10px 14px; border-radius: 14px 14px 4px 14px; white-space: pre-wrap; max-width: 80%; }
+  .msg.bot { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px 18px; }
+  .msg.bot .content > :first-child { margin-top: 0; }
+  .msg.bot .content > :last-child { margin-bottom: 0; }
+  .msg.bot table { border-collapse: collapse; margin: 10px 0; font-size: 14px; display: block; overflow-x: auto; }
+  .msg.bot th, .msg.bot td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+  .msg.bot th { background: var(--chip); }
+  .msg.bot code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .msg.bot pre { background: var(--code); padding: 10px; border-radius: 8px; overflow-x: auto; }
+  .msg.error { border-color: var(--accent); }
+  .ref { display: inline-block; font-size: 11px; font-weight: 650; padding: 0 6px; margin: 0 1px; border-radius: 6px; background: var(--chip); color: var(--accent); text-decoration: none; vertical-align: 1px; }
+  .steps { list-style: none; margin: 0 0 6px; padding: 0; color: var(--muted); font-size: 13px; }
+  .steps li::before { content: "↳ "; }
+  .steps.done { margin-bottom: 10px; }
+  .thinking { color: var(--muted); font-size: 14px; }
+  .thinking::after { content: "…"; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+  details.srcs { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; font-size: 13px; }
+  details.srcs summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+  .src { margin: 8px 0 0; padding: 8px 10px; background: var(--chip); border-radius: 8px; }
+  .src .head { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+  .src .head b { color: var(--accent); }
+  .src .meta { color: var(--muted); }
+  .src pre code { padding: 0; background: none; }
+  .src pre { margin: 6px 0 0; font-size: 12px; white-space: pre-wrap; word-break: break-word; background: var(--panel); }
+  .src:target { outline: 2px solid var(--accent); }
+  #empty { text-align: center; color: var(--muted); padding: 40px 16px 0; }
+  #empty h2 { color: var(--text); font-size: 22px; margin: 0 0 6px; }
+  .suggest { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 18px; }
+  .suggest button { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 999px; padding: 7px 14px; font-size: 14px; }
+  .suggest button:hover { border-color: var(--accent); }
+  footer { background: var(--bg); padding: 10px 16px 16px; }
+  form { max-width: 900px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 8px; }
+  textarea { flex: 1; resize: none; border: 0; background: transparent; color: var(--text); font: inherit; padding: 6px 8px; max-height: 200px; }
+  textarea:focus { outline: none; }
+  form:focus-within { border-color: var(--muted); }
+  #send { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 10px; padding: 8px 16px; font-weight: 600; }
+  #send:disabled { opacity: .5; cursor: not-allowed; }
+  .hint { max-width: 900px; margin: 6px auto 0; color: var(--muted); font-size: 12px; text-align: center; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  @media (max-width: 600px) { #sources { display: none; } .msg.user { max-width: 92%; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo" aria-hidden="true">C</div>
+  <h1>Assistant IA Camusat</h1>
+  <div id="sources" aria-label="Sources de données connectées"></div>
+  <button class="btn" id="reset" type="button">Nouvelle conversation</button>
+</header>
+
+<main id="main">
+  <div id="log" role="log" aria-live="polite" aria-relevant="additions">
+    <div id="empty">
+      <h2>Posez votre question</h2>
+      <p>L'assistant interroge les bases des plateformes (Inventaire, RH, Parc IT) en lecture seule et cite ses sources.</p>
+      <div class="suggest" id="suggest">
+        <button type="button">Combien d'articles en stock par entrepôt ?</button>
+        <button type="button">Quelles sorties magasin sont en attente de validation ?</button>
+        <button type="button">Combien d'employés actifs par département ?</button>
+        <button type="button">Quels matériels IT sont attribués à un employé donné ?</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <form id="form">
+    <label for="input" class="sr-only">Votre question</label>
+    <textarea id="input" rows="1" placeholder="Ex. : Quel est le stock disponible de câbles RF à Dakar ?" autocomplete="off"></textarea>
+    <button id="send" type="submit">Envoyer</button>
+  </form>
+  <p class="hint">Entrée pour envoyer · Maj+Entrée pour aller à la ligne · Vérifiez les informations importantes via les sources citées.</p>
+</footer>
+
+<script>
+(() => {
+  const log = document.getElementById("log");
+  const form = document.getElementById("form");
+  const input = document.getElementById("input");
+  const send = document.getElementById("send");
+  const main = document.getElementById("main");
+  let conversationId = null;
+  let busy = false;
+  let answerCount = 0;
+
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const scroll = () => { main.scrollTop = main.scrollHeight; };
+
+  function renderMarkdown(text, prefix) {
+    const html = window.marked && window.DOMPurify
+      ? DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: true }))
+      : "<p>" + esc(text).replace(/\n/g, "<br>") + "</p>";
+    // Transforme [S3] en lien vers la source correspondante.
+    return html.replace(/\[(S\d+)\]/g, (_, ref) => `<a class="ref" href="#${prefix}-${ref}" aria-label="Source ${ref}">${ref}</a>`);
+  }
+
+  function renderSources(citations, prefix) {
+    if (!citations.length) return "";
+    const items = citations.map((c) => `
+      <div class="src" id="${prefix}-${esc(c.ref)}" tabindex="-1">
+        <div class="head"><b>[${esc(c.ref)}]</b> <span>${esc(c.source_name)}</span>
+          <span class="meta">${esc(c.tables.join(", ") || "—")} · ${c.row_count} ligne(s)${c.truncated ? " (tronqué)" : ""} · ${esc(new Date(c.executed_at).toLocaleString("fr-FR"))}</span></div>
+        <div>${esc(c.purpose || "")}</div>
+        <pre><code>${esc(c.sql)}</code></pre>
+      </div>`).join("");
+    return `<details class="srcs"><summary>Sources (${citations.length})</summary>${items}</details>`;
+  }
+
+  async function loadSources() {
+    try {
+      const r = await fetch("/api/sources");
+      if (!r.ok) return;
+      const list = await r.json();
+      document.getElementById("sources").innerHTML = list.map((s) =>
+        `<span class="pill ${s.configured ? "ok" : "off"}" title="${s.configured ? "Connectée" : "Non configurée"}">${esc(s.name.split("(")[0].trim())}</span>`).join("");
+    } catch (_) { /* facultatif */ }
+  }
+
+  function addUser(text) {
+    document.getElementById("empty")?.remove();
+    const el = document.createElement("div");
+    el.className = "msg user";
+    el.textContent = text;
+    log.appendChild(el);
+  }
+
+  function addBot() {
+    const el = document.createElement("div");
+    el.className = "msg bot";
+    el.setAttribute("aria-busy", "true");
+    el.innerHTML = `<ul class="steps"></ul><div class="thinking">Recherche dans les données</div>`;
+    log.appendChild(el);
+    return el;
+  }
+
+  async function ask(question) {
+    if (busy || !question.trim()) return;
+    busy = true; send.disabled = true;
+    addUser(question);
+    const bot = addBot();
+    const steps = bot.querySelector(".steps");
+    scroll();
+    const prefix = `a${++answerCount}`;
+
+    try {
+      const resp = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: question, conversation_id: conversationId }),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.detail || `Erreur ${resp.status}`);
+      }
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finished = false;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line) continue;
+          const ev = JSON.parse(line);
+          if (ev.type === "conversation") conversationId = ev.id;
+          else if (ev.type === "step") {
+            const li = document.createElement("li");
+            li.textContent = ev.text;
+            steps.appendChild(li);
+            scroll();
+          } else if (ev.type === "answer") {
+            finished = true;
+            steps.classList.add("done");
+            bot.querySelector(".thinking")?.remove();
+            const content = document.createElement("div");
+            content.className = "content";
+            content.innerHTML = renderMarkdown(ev.text, prefix);
+            bot.appendChild(content);
+            bot.insertAdjacentHTML("beforeend", renderSources(ev.citations || [], prefix));
+          } else if (ev.type === "error") {
+            finished = true;
+            throw new Error(ev.message);
+          }
+        }
+      }
+      if (!finished) throw new Error("La connexion a été interrompue.");
+    } catch (e) {
+      bot.querySelector(".thinking")?.remove();
+      bot.classList.add("error");
+      const p = document.createElement("p");
+      p.setAttribute("role", "alert");
+      p.textContent = "⚠️ " + e.message;
+      bot.appendChild(p);
+    } finally {
+      bot.removeAttribute("aria-busy");
+      busy = false; send.disabled = false;
+      scroll();
+      input.focus();
+    }
+  }
+
+  // Ouvre le bloc « Sources » quand on clique sur une référence [Sx].
+  log.addEventListener("click", (e) => {
+    const a = e.target.closest("a.ref");
+    if (!a) return;
+    const target = document.getElementById(a.getAttribute("href").slice(1));
+    if (target) {
+      e.preventDefault();
+      target.closest("details").open = true;
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      target.focus({ preventScroll: true });
+    }
+  });
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const q = input.value;
+    input.value = ""; input.style.height = "auto";
+    ask(q);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
+  });
+  input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 200) + "px"; });
+  document.getElementById("suggest")?.addEventListener("click", (e) => {
+    if (e.target.tagName === "BUTTON") ask(e.target.textContent);
+  });
+  document.getElementById("reset").addEventListener("click", () => {
+    if (busy) return;
+    conversationId = null;
+    log.innerHTML = "";
+    input.focus();
+  });
+
+  loadSources();
+  input.focus();
+})();
+</script>
+</body>
+</html>

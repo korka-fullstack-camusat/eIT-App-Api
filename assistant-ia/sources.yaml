@@ -1,0 +1,137 @@
+# Sources de données interrogées par l'assistant.
+#
+# Ajouter une plateforme = ajouter un bloc ci-dessous + définir la variable
+# d'environnement indiquée dans `dsn_env` (chaîne de connexion PostgreSQL vers
+# un rôle EN LECTURE SEULE, voir scripts/create_readonly_role.sql).
+#
+# Les motifs d'exclusion utilisent la syntaxe glob (* et ?) et ne sont pas
+# sensibles à la casse. Les tables et colonnes exclues sont invisibles pour
+# l'agent et toute requête qui les mentionne est refusée.
+
+# Exclusions appliquées à toutes les sources
+global_exclude_tables:
+  - django_*            # sessions, migrations, admin…
+  - auth_*              # groupes / permissions Django
+  - token_blacklist_*   # jetons JWT
+  - authtoken_*
+  - "*otp*"
+  - alembic_version
+  - celery_*
+  - "*devicetoken*"
+  - "*_user_permissions"  # tables de liaison Django
+  - "*_user_groups"
+
+global_exclude_columns:
+  - "*password*"
+  - "*token*"
+  - "*secret*"
+  - "*otp*"
+  - api_key
+  - "*_hash"
+
+sources:
+  - id: inventory
+    name: Inventaire (stock, sorties magasin, transferts, fournisseurs)
+    dsn_env: INVENTORY_DB_URL
+    description: |
+      Plateforme de gestion de stock (inventory_backend, Django). Matériels sérialisés et
+      consommables, entrepôts, sites, projets, soldes de stock, sorties magasin (bons de
+      sortie et leur circuit de validation), transferts de matériel, livraisons fournisseurs,
+      rapports de vandalisme et de recyclage, inventaires de site.
+    hints: |
+      - Les tables suivent la convention Django <application>_<modèle> : inventory_item,
+        inventory_catalogitem, inventory_batch, inventory_warehouse, inventory_site,
+        inventory_project, inventory_lotbalance, inventory_scanevent,
+        wh_outbounds_warehouseoutbound (+ _warehouseoutboundline, _warehouseoutboundstep),
+        material_transfers_materialtransfer, suppliers_supplier, suppliers_suppliershipment.
+      - inventory_lotbalance = stock détenu : holder_type (ex. WH, SITE, TECH), holder_id, qty,
+        project_id, item_id.
+      - inventory_item : serial, status, condition (OK = disponible), location, catalog_item_id.
+      - Statuts des sorties magasin (wh_outbounds_warehouseoutbound.status) : DRAFT,
+        PENDING_V1, PENDING_V2, PENDING_V3, PENDING_CHEF, PENDING_RECEIVER, VALIDATED,
+        IN_PROGRESS, WH_OUT, INSTALLED, CLOSED, REJECTED.
+    exclude_tables:
+      - suppliers_supplierqrtoken
+      - notifications_*
+    exclude_columns: []
+
+  - id: rh
+    name: RH (employés, congés, présences, planning)
+    dsn_env: RH_DB_URL
+    description: |
+      Plateforme ressources humaines (erh-app-backend, Django). Employés et départements,
+      historique de carrière, congés (soldes, demandes, types), autorisations de sortie,
+      présences et pointages, planning des équipes, missions, attestations.
+    hints: |
+      - Tables principales : hr_employees_employee (matricule, nom, prenom, fonction,
+        categorie, service, projet, business_line, localisation, manager, status,
+        date_embauche, date_sortie, type_contrat), hr_employees_department,
+        leaves_leaverequest (employee_id, leave_type_id, start_date, end_date, days, status),
+        leaves_leavebalance (employee_id, leave_type_id, year, acquired, taken, adjusted),
+        leaves_leavetype, leaves_publicholiday, attendance_attendancedaily,
+        teamplanning_planningproject, hr_employees_missionrequest.
+      - Statut employé : ACTIVE, EXITED, SUSPENDED.
+    exclude_tables:
+      - hr_employees_disciplinary*     # dossiers disciplinaires
+      - hr_employees_infirmerie*       # données médicales
+      - hr_employees_payslip*          # bulletins de paie
+      - hr_employees_bulletin*
+      - hr_employees_questionnairesortie
+      - feedback_*                     # réponses aux campagnes de feedback
+      - users_accounthistory
+      - attendance_rawpunch            # pointages bruts biométriques
+      - attendance_personidmapping
+    exclude_columns:
+      # Identité et pièces
+      - numero_securite_sociale
+      - numero_piece
+      - passeport_*
+      - permis_numero
+      - date_naissance
+      - lieu_naissance
+      - adresse
+      - handicap_*
+      - est_travailleur_handicape
+      # Famille et contacts privés
+      - contact_urgence_*
+      - prenom_pere
+      - telephone_pere
+      - nom_prenom_mere
+      - telephone_mere
+      - nom_conjoint
+      - partenaire_*
+      - enfants
+      - nom_jeune_fille
+      # Coordonnées bancaires
+      - banque
+      - adresse_banque
+      - nom_beneficiaire
+      - adresse_beneficiaire
+      - iban
+      - bic_swift
+      - code_banque
+      - code_guichet
+      - numero_compte
+      - cle_rib
+      - rib
+
+  - id: parc_it
+    name: Parc IT (matériel informatique, licences, téléphonie)
+    dsn_env: PARC_IT_DB_URL
+    description: |
+      Plateforme eIT (eIT-App-Api, FastAPI). Matériel informatique et attributions aux
+      employés, licences logicielles, cartes SIM, sites GSM, véhicules, factures télécom,
+      projets IT, planning et demandes d'amélioration.
+    hints: |
+      - Tables : materiels (type_materiel, marque, modele, numero_serie, etat, statut,
+        beneficiaire_matricule), attributions (materiel_id, employee_matricule, employee_nom,
+        date_attribution, statut, date_restitution), licences, licence_attributions,
+        numeros_sim, affectations_sim, sites_gsm, vehicules, factures_telecom,
+        lignes_facture, projets, projet_etapes, taches, demandes_amelioration.
+      - Le matricule employé (employee_matricule / beneficiaire_matricule) permet de
+        croiser avec la source rh (hr_employees_employee.matricule).
+    exclude_tables:
+      - export_logs
+      - import_global_logs
+    exclude_columns:
+      - cle_licence
