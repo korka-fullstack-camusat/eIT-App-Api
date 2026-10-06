@@ -591,9 +591,8 @@ def _import_materiels_xlsx(content: bytes, db: Session):
         })
 
     # ── Passe 2 : attribuer des références uniques ──────────────────────────
-    # Si deux lignes ont la même référence (ou aucune), on génère PREFIX-NNNN
     seen_refs: set[str] = set()
-    type_seq:  dict[str, int] = {}  # prefix → dernier compteur utilisé
+    type_seq:  dict[str, int] = {}
 
     created = 0
     for p in pending:
