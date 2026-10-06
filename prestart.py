@@ -8,6 +8,13 @@ from app.database import Base, engine, SessionLocal
 from app.models import Materiel, Attribution, NumeroSIM, SiteGSM, Vehicule, AffectationSIM, FactureTelecom, LigneFacture, User, ImportGlobalLog, ExportLog
 from app.models.planning import Tache  # noqa: F401
 from app.models.licence import Licence, LicenceAttribution  # noqa: F401
+from app.models.suivi_parc import SuiviParcItem  # noqa: F401
+from app.models.licence_fichier import (  # noqa: F401
+    LicenceKaspersky, KasperskyMachine,
+    LicenceM365Compte, LicenceM365Membre,
+    LicenceAdobe, LicencePowerBI,
+)
+from app.models.flotte_sim import FlotteMobile, FlotteGps, FlotteRmsOrange, FlotteRmsFree  # noqa: F401
 from app.services.auth_service import hash_password
 
 print("→ Attente de la base de données...")
@@ -135,6 +142,153 @@ with engine.connect() as conn:
             notes TEXT,
             created_at TIMESTAMPTZ DEFAULT now()
         )""",
+        # Suivi du parc informatique (import depuis fichier Excel)
+        """CREATE TABLE IF NOT EXISTS suivi_parc (
+            id SERIAL PRIMARY KEY,
+            code_ref VARCHAR(50) NOT NULL UNIQUE,
+            nom VARCHAR(100),
+            prenom VARCHAR(200),
+            projet VARCHAR(100),
+            lieu VARCHAR(50),
+            nature VARCHAR(50),
+            designation_equipement VARCHAR(250),
+            ref_carte_reseau VARCHAR(100),
+            numero_serie VARCHAR(100),
+            po VARCHAR(50),
+            date_attribution DATE,
+            statut VARCHAR(50),
+            source_onglet VARCHAR(50),
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_suivi_parc_code_ref ON suivi_parc(code_ref)",
+        # Licences Kaspersky
+        """CREATE TABLE IF NOT EXISTS licences_kaspersky (
+            id SERIAL PRIMARY KEY,
+            numero INTEGER,
+            produit VARCHAR(100) NOT NULL,
+            code_activation VARCHAR(100) NOT NULL UNIQUE,
+            nb_machines INTEGER,
+            date_debut DATE,
+            date_expiration DATE,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_licences_kaspersky_code ON licences_kaspersky(code_activation)",
+        """CREATE TABLE IF NOT EXISTS kaspersky_machines (
+            id SERIAL PRIMARY KEY,
+            numero INTEGER,
+            machine VARCHAR(250) NOT NULL,
+            code_activation VARCHAR(100) NOT NULL REFERENCES licences_kaspersky(code_activation) ON DELETE CASCADE,
+            date_expiration DATE,
+            statut VARCHAR(50),
+            created_at TIMESTAMPTZ DEFAULT now()
+        )""",
+        # Microsoft 365
+        """CREATE TABLE IF NOT EXISTS licences_m365_comptes (
+            id SERIAL PRIMARY KEY,
+            numero INTEGER,
+            produit VARCHAR(100) NOT NULL,
+            compte_organisateur VARCHAR(100) NOT NULL UNIQUE,
+            email_organisateur VARCHAR(200),
+            nb_utilisateurs INTEGER,
+            places_libres INTEGER,
+            date_debut DATE,
+            dernier_renouvellement DATE,
+            date_expiration DATE,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_licences_m365_comptes_compte ON licences_m365_comptes(compte_organisateur)",
+        """CREATE TABLE IF NOT EXISTS licences_m365_membres (
+            id SERIAL PRIMARY KEY,
+            numero INTEGER,
+            nom VARCHAR(200) NOT NULL,
+            email VARCHAR(200),
+            role VARCHAR(50),
+            compte_organisateur VARCHAR(100) NOT NULL REFERENCES licences_m365_comptes(compte_organisateur) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )""",
+        # Adobe
+        """CREATE TABLE IF NOT EXISTS licences_adobe (
+            id SERIAL PRIMARY KEY,
+            numero INTEGER,
+            produit VARCHAR(100) NOT NULL,
+            utilisateur VARCHAR(200),
+            email_compte VARCHAR(200),
+            fournisseur VARCHAR(100),
+            date_activation DATE,
+            dernier_renouvellement DATE,
+            date_expiration DATE,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )""",
+        # Power BI
+        """CREATE TABLE IF NOT EXISTS licences_powerbi (
+            id SERIAL PRIMARY KEY,
+            numero INTEGER,
+            produit VARCHAR(100) NOT NULL,
+            utilisateur VARCHAR(200),
+            compte_powerbi VARCHAR(250),
+            fournisseur VARCHAR(100),
+            date_activation DATE,
+            dernier_renouvellement DATE,
+            date_expiration DATE,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )""",
+        # Flotte SIM — mobiles employés
+        """CREATE TABLE IF NOT EXISTS flotte_mobile (
+            id SERIAL PRIMARY KEY,
+            matricule VARCHAR(50),
+            beneficiaire VARCHAR(150),
+            service VARCHAR(100),
+            business_line VARCHAR(50),
+            fonction VARCHAR(150),
+            numero_ligne VARCHAR(30) NOT NULL,
+            engagement INTEGER,
+            date_activation DATE,
+            formule VARCHAR(150),
+            forfait_internet VARCHAR(100),
+            total_positionne NUMERIC(10,2),
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_flotte_mobile_numero ON flotte_mobile(numero_ligne)",
+        # Flotte SIM — GPS véhicules
+        """CREATE TABLE IF NOT EXISTS flotte_gps (
+            id SERIAL PRIMARY KEY,
+            numero_sim VARCHAR(30) NOT NULL,
+            engagement INTEGER,
+            date_activation DATE,
+            immatriculation VARCHAR(30),
+            modele VARCHAR(100),
+            imei VARCHAR(30),
+            facturation NUMERIC(10,2),
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_flotte_gps_numero ON flotte_gps(numero_sim)",
+        # Flotte SIM — RMS Orange
+        """CREATE TABLE IF NOT EXISTS flotte_rms_orange (
+            id SERIAL PRIMARY KEY,
+            numero VARCHAR(30) NOT NULL,
+            engagement INTEGER,
+            date_activation DATE,
+            imsi VARCHAR(20),
+            site_id VARCHAR(50),
+            nom_site VARCHAR(150),
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_flotte_rms_orange_numero ON flotte_rms_orange(numero)",
+        # Flotte SIM — RMS Free
+        """CREATE TABLE IF NOT EXISTS flotte_rms_free (
+            id SERIAL PRIMARY KEY,
+            numero VARCHAR(30) NOT NULL,
+            imsi VARCHAR(20),
+            site_id VARCHAR(50),
+            nom_site VARCHAR(150),
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_flotte_rms_free_numero ON flotte_rms_free(numero)",
     ]
     for sql in migrations:
         try:
