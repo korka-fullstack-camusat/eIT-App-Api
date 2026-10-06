@@ -8,6 +8,12 @@ from app.database import Base, engine, SessionLocal
 from app.models import Materiel, Attribution, NumeroSIM, SiteGSM, Vehicule, AffectationSIM, FactureTelecom, LigneFacture, User, ImportGlobalLog, ExportLog
 from app.models.planning import Tache  # noqa: F401
 from app.models.licence import Licence, LicenceAttribution  # noqa: F401
+from app.models.employee_local import EmployeeLocal  # noqa: F401
+from app.models.licence_fichier import (  # noqa: F401
+    LicenceKaspersky, KasperskyMachine,
+    LicenceM365Compte, LicenceM365Membre,
+    LicenceAdobe, LicencePowerBI,
+)
 from app.services.auth_service import hash_password
 
 print("→ Attente de la base de données...")
@@ -133,6 +139,99 @@ with engine.connect() as conn:
             materiel_id INTEGER,
             date_attribution DATE NOT NULL,
             notes TEXT,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )""",
+        # Employés importés localement depuis le fichier export eRH
+        """CREATE TABLE IF NOT EXISTS employees_local (
+            id SERIAL PRIMARY KEY,
+            matricule VARCHAR(20) NOT NULL UNIQUE,
+            nom VARCHAR(100) NOT NULL,
+            prenom VARCHAR(200),
+            email VARCHAR(200),
+            fonction VARCHAR(250),
+            service VARCHAR(150),
+            type_contrat VARCHAR(50),
+            statut VARCHAR(50),
+            date_embauche DATE,
+            date_fin_cdd DATE,
+            fin_periode_essai DATE,
+            genre VARCHAR(20),
+            telephone VARCHAR(100),
+            manager_n1 VARCHAR(200),
+            manager_n2 VARCHAR(200),
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_employees_local_matricule ON employees_local(matricule)",
+        # Licences Kaspersky
+        """CREATE TABLE IF NOT EXISTS licences_kaspersky (
+            id SERIAL PRIMARY KEY,
+            numero INTEGER,
+            produit VARCHAR(100) NOT NULL,
+            code_activation VARCHAR(100) NOT NULL UNIQUE,
+            nb_machines INTEGER,
+            date_debut DATE,
+            date_expiration DATE,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_licences_kaspersky_code ON licences_kaspersky(code_activation)",
+        """CREATE TABLE IF NOT EXISTS kaspersky_machines (
+            id SERIAL PRIMARY KEY,
+            numero INTEGER,
+            machine VARCHAR(250) NOT NULL,
+            code_activation VARCHAR(100) NOT NULL REFERENCES licences_kaspersky(code_activation) ON DELETE CASCADE,
+            date_expiration DATE,
+            statut VARCHAR(50),
+            created_at TIMESTAMPTZ DEFAULT now()
+        )""",
+        # Microsoft 365
+        """CREATE TABLE IF NOT EXISTS licences_m365_comptes (
+            id SERIAL PRIMARY KEY,
+            numero INTEGER,
+            produit VARCHAR(100) NOT NULL,
+            compte_organisateur VARCHAR(100) NOT NULL UNIQUE,
+            email_organisateur VARCHAR(200),
+            nb_utilisateurs INTEGER,
+            places_libres INTEGER,
+            date_debut DATE,
+            dernier_renouvellement DATE,
+            date_expiration DATE,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_licences_m365_comptes_compte ON licences_m365_comptes(compte_organisateur)",
+        """CREATE TABLE IF NOT EXISTS licences_m365_membres (
+            id SERIAL PRIMARY KEY,
+            numero INTEGER,
+            nom VARCHAR(200) NOT NULL,
+            email VARCHAR(200),
+            role VARCHAR(50),
+            compte_organisateur VARCHAR(100) NOT NULL REFERENCES licences_m365_comptes(compte_organisateur) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )""",
+        # Adobe
+        """CREATE TABLE IF NOT EXISTS licences_adobe (
+            id SERIAL PRIMARY KEY,
+            numero INTEGER,
+            produit VARCHAR(100) NOT NULL,
+            utilisateur VARCHAR(200),
+            email_compte VARCHAR(200),
+            fournisseur VARCHAR(100),
+            date_activation DATE,
+            dernier_renouvellement DATE,
+            date_expiration DATE,
+            created_at TIMESTAMPTZ DEFAULT now()
+        )""",
+        # Power BI
+        """CREATE TABLE IF NOT EXISTS licences_powerbi (
+            id SERIAL PRIMARY KEY,
+            numero INTEGER,
+            produit VARCHAR(100) NOT NULL,
+            utilisateur VARCHAR(200),
+            compte_powerbi VARCHAR(250),
+            fournisseur VARCHAR(100),
+            date_activation DATE,
+            dernier_renouvellement DATE,
+            date_expiration DATE,
             created_at TIMESTAMPTZ DEFAULT now()
         )""",
     ]

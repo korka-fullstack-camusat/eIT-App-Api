@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import materiels, attributions, telephonie, factures, employees, auth, templates, export_global, planning, licences, projets, demandes
+from .routers import import_employees, import_licences
 
 app = FastAPI(
     title="Parc IT — Camusat Sénégal",
@@ -28,6 +29,8 @@ app.include_router(planning.router)
 app.include_router(licences.router)
 app.include_router(projets.router)
 app.include_router(demandes.router)
+app.include_router(import_employees.router)
+app.include_router(import_licences.router)
 
 
 @app.get("/")
