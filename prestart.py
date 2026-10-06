@@ -8,7 +8,7 @@ from app.database import Base, engine, SessionLocal
 from app.models import Materiel, Attribution, NumeroSIM, SiteGSM, Vehicule, AffectationSIM, FactureTelecom, LigneFacture, User, ImportGlobalLog, ExportLog
 from app.models.planning import Tache  # noqa: F401
 from app.models.licence import Licence, LicenceAttribution  # noqa: F401
-from app.models.employee_local import EmployeeLocal  # noqa: F401
+from app.models.suivi_parc import SuiviParcItem  # noqa: F401
 from app.models.licence_fichier import (  # noqa: F401
     LicenceKaspersky, KasperskyMachine,
     LicenceM365Compte, LicenceM365Membre,
@@ -141,28 +141,26 @@ with engine.connect() as conn:
             notes TEXT,
             created_at TIMESTAMPTZ DEFAULT now()
         )""",
-        # Employés importés localement depuis le fichier export eRH
-        """CREATE TABLE IF NOT EXISTS employees_local (
+        # Suivi du parc informatique (import depuis fichier Excel)
+        """CREATE TABLE IF NOT EXISTS suivi_parc (
             id SERIAL PRIMARY KEY,
-            matricule VARCHAR(20) NOT NULL UNIQUE,
-            nom VARCHAR(100) NOT NULL,
+            code_ref VARCHAR(50) NOT NULL UNIQUE,
+            nom VARCHAR(100),
             prenom VARCHAR(200),
-            email VARCHAR(200),
-            fonction VARCHAR(250),
-            service VARCHAR(150),
-            type_contrat VARCHAR(50),
+            projet VARCHAR(100),
+            lieu VARCHAR(50),
+            nature VARCHAR(50),
+            designation_equipement VARCHAR(250),
+            ref_carte_reseau VARCHAR(100),
+            numero_serie VARCHAR(100),
+            po VARCHAR(50),
+            date_attribution DATE,
             statut VARCHAR(50),
-            date_embauche DATE,
-            date_fin_cdd DATE,
-            fin_periode_essai DATE,
-            genre VARCHAR(20),
-            telephone VARCHAR(100),
-            manager_n1 VARCHAR(200),
-            manager_n2 VARCHAR(200),
+            source_onglet VARCHAR(50),
             created_at TIMESTAMPTZ DEFAULT now(),
             updated_at TIMESTAMPTZ
         )""",
-        "CREATE INDEX IF NOT EXISTS ix_employees_local_matricule ON employees_local(matricule)",
+        "CREATE INDEX IF NOT EXISTS ix_suivi_parc_code_ref ON suivi_parc(code_ref)",
         # Licences Kaspersky
         """CREATE TABLE IF NOT EXISTS licences_kaspersky (
             id SERIAL PRIMARY KEY,
