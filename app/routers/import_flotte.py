@@ -79,6 +79,20 @@ def _header_map(row) -> dict[str, int]:
     return {str(h or "").strip().lower(): i for i, h in enumerate(row)}
 
 
+def _find_header_row(rows: list, keywords: list[str], max_scan: int = 4) -> int:
+    """
+    Retourne l'index de la première ligne contenant ≥ 2 mots-clés parmi keywords.
+    Repli sur la première ligne avec ≥ 1 mot-clé, puis sur 0.
+    """
+    for threshold in (2, 1):
+        for i, row in enumerate(rows[:max_scan]):
+            row_str = [str(v or "").strip().lower() for v in row]
+            matches = sum(1 for cell in row_str if any(kw in cell for kw in keywords))
+            if matches >= threshold:
+                return i
+    return 0
+
+
 def _end_date(d: Optional[date], months: Optional[int]) -> Optional[date]:
     """Calcule la date de fin d'engagement."""
     if d is None or months is None:
@@ -146,11 +160,12 @@ def _parse_mobiles(ws) -> list[dict]:
 
 
 def _parse_gps(ws) -> list[dict]:
-    """En-têtes en ligne 1 (index 0)."""
+    """En-têtes auto-détectés dans les 4 premières lignes."""
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
         return []
-    hm = _header_map(rows[0])
+    h_idx = _find_header_row(rows, ["sim", "immatr", "engagement", "imei", "activation", "modèle", "modele"], max_scan=4)
+    hm = _header_map(rows[h_idx])
 
     def _col(name: str) -> Optional[int]:
         for k, v in hm.items():
@@ -158,16 +173,16 @@ def _parse_gps(ws) -> list[dict]:
                 return v
         return None
 
-    col_sim          = next((v for k, v in hm.items() if "sim" in k or "n°sim" in k or "numéro" in k), None)
-    col_engagement   = _col("engagement")
-    col_activation   = _col("activation")
-    col_immat        = next((v for k, v in hm.items() if "immatr" in k), None)
-    col_modele       = next((v for k, v in hm.items() if "model" in k or "modèle" in k), None)
-    col_imei         = _col("imei")
-    col_fact         = next((v for k, v in hm.items() if "factur" in k), None)
+    col_sim        = next((v for k, v in hm.items() if "sim" in k or "n°" in k or "numéro" in k or "numero" in k), None)
+    col_engagement = next((v for k, v in hm.items() if "engagement" in k or "durée" in k), None)
+    col_activation = next((v for k, v in hm.items() if "activation" in k), None)
+    col_immat      = next((v for k, v in hm.items() if "immatr" in k), None)
+    col_modele     = next((v for k, v in hm.items() if "modèle" in k or "model" in k), None)
+    col_imei       = _col("imei")
+    col_fact       = next((v for k, v in hm.items() if "factur" in k), None)
 
     records = []
-    for row in rows[1:]:
+    for row in rows[h_idx + 1:]:
         if col_sim is None:
             continue
         sim = _to_str(row[col_sim] if col_sim < len(row) else None)
@@ -186,11 +201,12 @@ def _parse_gps(ws) -> list[dict]:
 
 
 def _parse_rms_orange(ws) -> list[dict]:
-    """En-têtes en ligne 1 (index 0), colonne 0 = N°."""
+    """En-têtes auto-détectés dans les 4 premières lignes."""
     rows = list(ws.iter_rows(values_only=True))
     if not rows:
         return []
-    hm = _header_map(rows[0])
+    h_idx = _find_header_row(rows, ["numéro", "numero", "imsi", "site", "engagement", "activation", "n°"], max_scan=4)
+    hm = _header_map(rows[h_idx])
 
     def _col(name: str) -> Optional[int]:
         for k, v in hm.items():
@@ -198,15 +214,27 @@ def _parse_rms_orange(ws) -> list[dict]:
                 return v
         return None
 
-    col_numero     = next((v for k, v in hm.items() if "numéro" in k or "numero" in k or k == ""), 1)
-    col_engagement = _col("engagement")
-    col_activation = _col("activation")
+    # Numéro : plusieurs variantes possibles dans les fichiers Orange
+    col_numero = next((
+        v for k, v in hm.items()
+        if k in ("numéro", "numero", "n°", "no") or
+           ("numéro" in k) or ("numero" in k) or ("n°" in k and "sim" not in k)
+    ), None)
+    # Dernier recours positonnel : première colonne non vide avec une valeur ressemblant à un n° (à l'import)
+    if col_numero is None:
+        col_numero = 1  # fallback position
+
+    col_engagement = next((v for k, v in hm.items() if "engagement" in k or ("mois" in k and "activation" not in k)), None)
+    col_activation = next((v for k, v in hm.items() if "activation" in k), None)
     col_imsi       = _col("imsi")
-    col_site_id    = next((v for k, v in hm.items() if "site" in k and "id" in k), None)
+    col_site_id    = next((v for k, v in hm.items() if "site" in k and ("id" in k or "code" in k or "réf" in k or "ref" in k)), None)
     col_nom_site   = next((v for k, v in hm.items() if "nom" in k and "site" in k), None)
+    # Si site_id non trouvé, prendre la colonne "site" seule
+    if col_site_id is None:
+        col_site_id = next((v for k, v in hm.items() if k == "site"), None)
 
     records = []
-    for row in rows[1:]:
+    for row in rows[h_idx + 1:]:
         if col_numero is None or col_numero >= len(row):
             continue
         numero = _to_str(row[col_numero])
@@ -441,4 +469,34 @@ def get_alertes(
         "total":   len(alertes),
         "seuil":   seuil.isoformat(),
         "alertes": alertes,
+    }
+
+
+# ── Stats globales ─────────────────────────────────────────────────────────────
+
+@router.get("/stats", summary="Compteurs globaux de la flotte SIM")
+def get_stats(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_editor),
+):
+    today = date.today()
+    seuil = today + timedelta(days=90)
+
+    nb_alertes = 0
+    for table, num_field, act_field, eng_field in [
+        (FlotteMobile,    "numero_ligne",  "date_activation", "engagement"),
+        (FlotteGps,       "numero_sim",    "date_activation", "engagement"),
+        (FlotteRmsOrange, "numero",        "date_activation", "engagement"),
+    ]:
+        for row in db.query(table).all():
+            fin = _end_date(getattr(row, act_field), getattr(row, eng_field))
+            if fin and fin <= seuil:
+                nb_alertes += 1
+
+    return {
+        "mobiles":    db.query(FlotteMobile).count(),
+        "gps":        db.query(FlotteGps).count(),
+        "rms_orange": db.query(FlotteRmsOrange).count(),
+        "rms_free":   db.query(FlotteRmsFree).count(),
+        "alertes":    nb_alertes,
     }
