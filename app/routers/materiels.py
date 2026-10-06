@@ -463,6 +463,7 @@ def _import_materiels_xlsx(content: bytes, db: Session):
         raise HTTPException(400, "Format non reconnu : aucune colonne attendue (Nature, Désignation, Matricule) trouvée dans les 10 premières lignes.")
 
     def col(row, *names):
+        # Exact match first
         for name in names:
             idx = headers.get(name)
             if idx is not None and idx < len(row):
@@ -471,6 +472,15 @@ def _import_materiels_xlsx(content: bytes, db: Session):
                     v = v.strip()
                 if v not in (None, ""):
                     return v
+        # Partial match fallback (e.g. "N° Référence" → norm → "NREFERENCE" still contains "REFERENCE")
+        for name in names:
+            for key, idx in headers.items():
+                if name in key and idx < len(row):
+                    v = row[idx]
+                    if isinstance(v, str):
+                        v = v.strip()
+                    if v not in (None, ""):
+                        return v
         return None
 
     # Écrasement complet : supprimer attributions puis matériels existants
@@ -546,7 +556,8 @@ def _import_materiels_xlsx(content: bytes, db: Session):
         created += 1
 
     db.commit()
-    return {"created": created, "errors": errors, "total_lignes": created + len(errors)}
+    return {"created": created, "errors": errors, "total_lignes": created + len(errors),
+            "detected_columns": list(headers.keys())}
 
 
 TYPE_LABELS_FALLBACK = {
