@@ -110,9 +110,11 @@ def import_update_materiels(file: UploadFile = File(...), db: Session = Depends(
 
 @router.get("/next-reference")
 def next_reference(type_materiel: TypeMateriel = Query(...), db: Session = Depends(get_db)):
-    """Retourne la prochaine référence unique disponible pour un type donné."""
+    """Retourne la prochaine référence unique disponible pour un type donné (format PREFIX-YY-NNNN)."""
     prefix = REF_PREFIXES.get(type_materiel.value, "AUT")
-    rows = db.query(Materiel.reference).filter(Materiel.reference.like(f"{prefix}-%")).all()
+    yy = dt_date.today().year % 100
+    pattern = f"{prefix}-{yy:02d}-%"
+    rows = db.query(Materiel.reference).filter(Materiel.reference.like(pattern)).all()
     used = set()
     for (r,) in rows:
         if r:
@@ -122,7 +124,7 @@ def next_reference(type_materiel: TypeMateriel = Query(...), db: Session = Depen
     n = 1
     while n in used:
         n += 1
-    return {"reference": f"{prefix}-{n:04d}"}
+    return {"reference": f"{prefix}-{yy:02d}-{n:04d}"}
 
 
 @router.get("/export-excel")
@@ -594,6 +596,7 @@ def _import_materiels_xlsx(content: bytes, db: Session):
     seen_refs: set[str] = set()
     type_seq:  dict[str, int] = {}
 
+    yy = dt_date.today().year % 100
     created = 0
     for p in pending:
         raw = p.pop("reference_raw")
@@ -604,10 +607,10 @@ def _import_materiels_xlsx(content: bytes, db: Session):
             ref = raw
         else:
             n = type_seq.get(prefix, 0) + 1
-            while f"{prefix}-{n:04d}" in seen_refs:
+            while f"{prefix}-{yy:02d}-{n:04d}" in seen_refs:
                 n += 1
             type_seq[prefix] = n
-            ref = f"{prefix}-{n:04d}"
+            ref = f"{prefix}-{yy:02d}-{n:04d}"
 
         seen_refs.add(ref)
         p["reference"] = ref
