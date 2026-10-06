@@ -110,21 +110,18 @@ def import_update_materiels(file: UploadFile = File(...), db: Session = Depends(
 
 @router.get("/next-reference")
 def next_reference(type_materiel: TypeMateriel = Query(...), db: Session = Depends(get_db)):
-    """Retourne la prochaine référence unique disponible pour un type donné (format PREFIX-YY-NNNN)."""
+    """Retourne la prochaine référence disponible (format PREFIX-YY-NNNN, compteur global sur les 4 chiffres)."""
     prefix = REF_PREFIXES.get(type_materiel.value, "AUT")
     yy = dt_date.today().year % 100
-    pattern = f"{prefix}-{yy:02d}-%"
-    rows = db.query(Materiel.reference).filter(Materiel.reference.like(pattern)).all()
-    used = set()
+    # compteur global : on cherche le max des 4 chiffres toutes références confondues
+    rows = db.query(Materiel.reference).filter(Materiel.reference.isnot(None)).all()
+    max_n = 0
     for (r,) in rows:
         if r:
             parts = r.rsplit("-", 1)
             if len(parts) == 2 and parts[1].isdigit():
-                used.add(int(parts[1]))
-    n = 1
-    while n in used:
-        n += 1
-    return {"reference": f"{prefix}-{yy:02d}-{n:04d}"}
+                max_n = max(max_n, int(parts[1]))
+    return {"reference": f"{prefix}-{yy:02d}-{max_n + 1:04d}"}
 
 
 @router.get("/export-excel")
@@ -592,11 +589,20 @@ def _import_materiels_xlsx(content: bytes, db: Session):
             "date_acquisition":       date_acquisition,
         })
 
-    # ── Passe 2 : attribuer des références uniques ──────────────────────────
-    seen_refs: set[str] = set()
-    type_seq:  dict[str, int] = {}
+    # ── Passe 2 : attribuer des références uniques (compteur global) ───────
+    # Récupérer le max actuel en base pour partir du bon numéro
+    existing = db.query(Materiel.reference).filter(Materiel.reference.isnot(None)).all()
+    global_max = 0
+    for (r,) in existing:
+        if r:
+            parts = r.rsplit("-", 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                global_max = max(global_max, int(parts[1]))
 
+    seen_refs: set[str] = set()
     yy = dt_date.today().year % 100
+    counter = global_max  # on incrémente à chaque nouvelle ref générée
+
     created = 0
     for p in pending:
         raw = p.pop("reference_raw")
@@ -606,11 +612,8 @@ def _import_materiels_xlsx(content: bytes, db: Session):
         if raw and raw not in seen_refs:
             ref = raw
         else:
-            n = type_seq.get(prefix, 0) + 1
-            while f"{prefix}-{yy:02d}-{n:04d}" in seen_refs:
-                n += 1
-            type_seq[prefix] = n
-            ref = f"{prefix}-{yy:02d}-{n:04d}"
+            counter += 1
+            ref = f"{prefix}-{yy:02d}-{counter:04d}"
 
         seen_refs.add(ref)
         p["reference"] = ref
