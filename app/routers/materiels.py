@@ -389,21 +389,44 @@ def _import_materiels_xlsx(content: bytes, db: Session):
         "ORDINATEURFIXE": "ORDINATEUR_FIXE",
         "PCPORTABLE": "ORDINATEUR_PORTABLE",
         "PCFIXE": "ORDINATEUR_FIXE",
+        "LAPTOP": "ORDINATEUR_PORTABLE",
+        "NOTEBOOK": "ORDINATEUR_PORTABLE",
+        "DESKTOP": "ORDINATEUR_FIXE",
+        "FIXE": "ORDINATEUR_FIXE",
         "TELEPHONE": "TELEPHONE",
         "TABLETTE": "TABLETTE",
+        "TABLET": "TABLETTE",
         "ECRAN": "ECRAN",
+        "MONITEUR": "ECRAN",
+        "MONITOR": "ECRAN",
         "SOURIS": "SOURIS",
         "CLAVIER": "CLAVIER",
         "CASQUE": "AUTRE",
         "IMPRIMANTE": "IMPRIMANTE",
+        "PRINTER": "IMPRIMANTE",
         "SWITCH": "SWITCH",
         "ROUTEUR": "ROUTEUR",
+        "ROUTER": "ROUTEUR",
         "ONDULEUR": "ONDULEUR",
+        "UPS": "ONDULEUR",
         "AP": "AP",
         "POINTDACCES": "AP",
+        "ACCESSPOINT": "AP",
         "SERVEUR": "SERVEUR",
+        "SERVER": "SERVEUR",
         "PAREFEU": "PARE_FEU",
         "FIREWALL": "PARE_FEU",
+        "POINTEUSE": "AUTRE",
+        "BADGEUSE": "AUTRE",
+        "SCANNER": "AUTRE",
+        "DISQUE": "AUTRE",
+        "DISQUEDUR": "AUTRE",
+        "CLE": "AUTRE",
+        "CLEUSB": "AUTRE",
+        "WEBCAM": "AUTRE",
+        "CAMERA": "AUTRE",
+        "PROJECTEUR": "AUTRE",
+        "VIDEOPROJECTEUR": "AUTRE",
     }
     STATUT_MAP = {
         "ENSERVICE": "ATTRIBUE",
@@ -450,11 +473,13 @@ def _import_materiels_xlsx(content: bytes, db: Session):
                     return v
         return None
 
-    existing_series = {
-        s for (s,) in db.query(Materiel.numero_serie).filter(Materiel.numero_serie.isnot(None)).all()
+    # Index des matériels existants par N° série pour la mise à jour
+    existing_by_serie: dict = {
+        s: id_
+        for id_, s in db.query(Materiel.id, Materiel.numero_serie).filter(Materiel.numero_serie.isnot(None)).all()
     }
 
-    created, errors = 0, []
+    created, updated, errors = 0, 0, []
     for i, row in enumerate(ws.iter_rows(min_row=header_row_idx + 1, values_only=True), start=header_row_idx + 1):
         if all(v is None for v in row):
             continue
@@ -478,9 +503,6 @@ def _import_materiels_xlsx(content: bytes, db: Session):
 
         numero_serie = col(row, "NSERIE", "NDESERIE")
         numero_serie = str(numero_serie).strip() if numero_serie else None
-        if numero_serie and numero_serie in existing_series:
-            errors.append({"ligne": i, "message": f"N° série déjà existant : '{numero_serie}'"})
-            continue
 
         adresse_mac    = col(row, "REFCARTERESEAU")
         numero_bon_cmd = col(row, "PO")
@@ -504,28 +526,34 @@ def _import_materiels_xlsx(content: bytes, db: Session):
         statut_raw = col(row, "STATUT")
         statut_val = STATUT_MAP.get(norm(statut_raw), "DISPONIBLE") if statut_raw else "DISPONIBLE"
 
-        obj = Materiel(
-            type_materiel    = TypeMateriel(type_val),
-            marque           = str(marque)[:100],
-            modele           = str(modele)[:150] or None,
-            numero_serie     = numero_serie,
-            adresse_mac      = str(adresse_mac)[:50] if adresse_mac else None,
-            numero_bon_cmd   = str(numero_bon_cmd)[:100] if numero_bon_cmd else None,
-            projet           = str(projet)[:100] if projet else None,
+        fields = dict(
+            type_materiel          = TypeMateriel(type_val),
+            marque                 = str(marque)[:100],
+            modele                 = str(modele)[:150] or None,
+            numero_serie           = numero_serie,
+            adresse_mac            = str(adresse_mac)[:50] if adresse_mac else None,
+            numero_bon_cmd         = str(numero_bon_cmd)[:100] if numero_bon_cmd else None,
+            projet                 = str(projet)[:100] if projet else None,
             beneficiaire_matricule = str(matricule)[:50] if matricule else None,
             beneficiaire_nom       = str(nom)[:100] if nom else None,
             beneficiaire_prenom    = str(prenom)[:100] if prenom else None,
-            etat             = EtatMateriel.BON,
-            statut           = StatutMateriel(statut_val),
-            date_acquisition = date_acquisition,
+            etat                   = EtatMateriel.BON,
+            statut                 = StatutMateriel(statut_val),
+            date_acquisition       = date_acquisition,
         )
-        db.add(obj)
-        if numero_serie:
-            existing_series.add(numero_serie)
-        created += 1
+
+        if numero_serie and numero_serie in existing_by_serie:
+            # Mise à jour du matériel existant
+            db.query(Materiel).filter(Materiel.id == existing_by_serie[numero_serie]).update(fields)
+            updated += 1
+        else:
+            db.add(Materiel(**fields))
+            if numero_serie:
+                existing_by_serie[numero_serie] = None  # marque comme vu
+            created += 1
 
     db.commit()
-    return {"created": created, "errors": errors, "total_lignes": created + len(errors)}
+    return {"created": created, "updated": updated, "errors": errors, "total_lignes": created + updated + len(errors)}
 
 
 TYPE_LABELS_FALLBACK = {
