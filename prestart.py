@@ -14,6 +14,7 @@ from app.models.licence_fichier import (  # noqa: F401
     LicenceM365Compte, LicenceM365Membre,
     LicenceAdobe, LicencePowerBI,
 )
+from app.models.flotte_sim import FlotteMobile, FlotteGps, FlotteRmsOrange, FlotteRmsFree  # noqa: F401
 from app.services.auth_service import hash_password
 
 print("→ Attente de la base de données...")
@@ -232,6 +233,62 @@ with engine.connect() as conn:
             date_expiration DATE,
             created_at TIMESTAMPTZ DEFAULT now()
         )""",
+        # Flotte SIM — mobiles employés
+        """CREATE TABLE IF NOT EXISTS flotte_mobile (
+            id SERIAL PRIMARY KEY,
+            matricule VARCHAR(50),
+            beneficiaire VARCHAR(150),
+            service VARCHAR(100),
+            business_line VARCHAR(50),
+            fonction VARCHAR(150),
+            numero_ligne VARCHAR(30) NOT NULL,
+            engagement INTEGER,
+            date_activation DATE,
+            formule VARCHAR(150),
+            forfait_internet VARCHAR(100),
+            total_positionne NUMERIC(10,2),
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_flotte_mobile_numero ON flotte_mobile(numero_ligne)",
+        # Flotte SIM — GPS véhicules
+        """CREATE TABLE IF NOT EXISTS flotte_gps (
+            id SERIAL PRIMARY KEY,
+            numero_sim VARCHAR(30) NOT NULL,
+            engagement INTEGER,
+            date_activation DATE,
+            immatriculation VARCHAR(30),
+            modele VARCHAR(100),
+            imei VARCHAR(30),
+            facturation NUMERIC(10,2),
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_flotte_gps_numero ON flotte_gps(numero_sim)",
+        # Flotte SIM — RMS Orange
+        """CREATE TABLE IF NOT EXISTS flotte_rms_orange (
+            id SERIAL PRIMARY KEY,
+            numero VARCHAR(30) NOT NULL,
+            engagement INTEGER,
+            date_activation DATE,
+            imsi VARCHAR(20),
+            site_id VARCHAR(50),
+            nom_site VARCHAR(150),
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_flotte_rms_orange_numero ON flotte_rms_orange(numero)",
+        # Flotte SIM — RMS Free
+        """CREATE TABLE IF NOT EXISTS flotte_rms_free (
+            id SERIAL PRIMARY KEY,
+            numero VARCHAR(30) NOT NULL,
+            imsi VARCHAR(20),
+            site_id VARCHAR(50),
+            nom_site VARCHAR(150),
+            created_at TIMESTAMPTZ DEFAULT now(),
+            updated_at TIMESTAMPTZ
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_flotte_rms_free_numero ON flotte_rms_free(numero)",
     ]
     for sql in migrations:
         try:
