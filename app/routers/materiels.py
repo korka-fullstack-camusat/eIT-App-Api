@@ -473,13 +473,13 @@ def _import_materiels_xlsx(content: bytes, db: Session):
                     return v
         return None
 
-    # Index des matériels existants par N° série pour la mise à jour
-    existing_by_serie: dict = {
-        s: id_
-        for id_, s in db.query(Materiel.id, Materiel.numero_serie).filter(Materiel.numero_serie.isnot(None)).all()
-    }
+    # Écrasement complet : supprimer attributions puis matériels existants
+    from ..models.attribution import Attribution
+    db.query(Attribution).delete()
+    db.query(Materiel).delete()
+    db.flush()
 
-    created, updated, errors = 0, 0, []
+    created, errors = 0, []
     for i, row in enumerate(ws.iter_rows(min_row=header_row_idx + 1, values_only=True), start=header_row_idx + 1):
         if all(v is None for v in row):
             continue
@@ -526,7 +526,7 @@ def _import_materiels_xlsx(content: bytes, db: Session):
         statut_raw = col(row, "STATUT")
         statut_val = STATUT_MAP.get(norm(statut_raw), "DISPONIBLE") if statut_raw else "DISPONIBLE"
 
-        fields = dict(
+        db.add(Materiel(
             type_materiel          = TypeMateriel(type_val),
             marque                 = str(marque)[:100],
             modele                 = str(modele)[:150] or None,
@@ -540,20 +540,11 @@ def _import_materiels_xlsx(content: bytes, db: Session):
             etat                   = EtatMateriel.BON,
             statut                 = StatutMateriel(statut_val),
             date_acquisition       = date_acquisition,
-        )
-
-        if numero_serie and numero_serie in existing_by_serie:
-            # Mise à jour du matériel existant
-            db.query(Materiel).filter(Materiel.id == existing_by_serie[numero_serie]).update(fields)
-            updated += 1
-        else:
-            db.add(Materiel(**fields))
-            if numero_serie:
-                existing_by_serie[numero_serie] = None  # marque comme vu
-            created += 1
+        ))
+        created += 1
 
     db.commit()
-    return {"created": created, "updated": updated, "errors": errors, "total_lignes": created + updated + len(errors)}
+    return {"created": created, "errors": errors, "total_lignes": created + len(errors)}
 
 
 TYPE_LABELS_FALLBACK = {
