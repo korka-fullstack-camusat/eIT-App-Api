@@ -89,6 +89,7 @@ def suivi_employes(
             "marque":           m.marque,
             "modele":           m.modele or "",
             "numero_serie":     m.numero_serie or "",
+            "reference":        m.reference or "",
             "statut_materiel":  str(m.statut).split(".")[-1],
         })
 
@@ -122,6 +123,7 @@ def suivi_employes(
                 "marque":           mat.marque if mat else "",
                 "modele":           mat.modele or "" if mat else "",
                 "numero_serie":     mat.numero_serie or "" if mat else "",
+                "reference":        mat.reference or "" if mat else "",
                 "statut_materiel":  str(mat.statut).split(".")[-1] if mat else "",
             })
 
