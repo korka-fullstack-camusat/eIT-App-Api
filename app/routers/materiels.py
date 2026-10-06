@@ -13,6 +13,24 @@ from ..services.auth_service import require_editor
 
 router = APIRouter(prefix="/api/materiels", tags=["Matériels"])
 
+REF_PREFIXES: dict[str, str] = {
+    "ORDINATEUR_PORTABLE": "PCP",
+    "ORDINATEUR_FIXE":     "PCF",
+    "ECRAN":               "ECR",
+    "SOURIS":              "SOU",
+    "CLAVIER":             "CLA",
+    "TELEPHONE":           "TEL",
+    "TABLETTE":            "TAB",
+    "IMPRIMANTE":          "IMP",
+    "SWITCH":              "SWI",
+    "ROUTEUR":             "ROU",
+    "ONDULEUR":            "OND",
+    "AP":                  "APO",
+    "SERVEUR":             "SRV",
+    "PARE_FEU":            "PFW",
+    "AUTRE":               "AUT",
+}
+
 
 @router.get("/", response_model=list[MaterielOut])
 def list_materiels(
@@ -88,6 +106,23 @@ def import_update_materiels(file: UploadFile = File(...), db: Session = Depends(
     """Mise à jour en masse depuis un fichier Excel exporté (avec colonne ID)."""
     content = file.file.read()
     return _import_update_xlsx(content, db)
+
+
+@router.get("/next-reference")
+def next_reference(type_materiel: TypeMateriel = Query(...), db: Session = Depends(get_db)):
+    """Retourne la prochaine référence unique disponible pour un type donné."""
+    prefix = REF_PREFIXES.get(type_materiel.value, "AUT")
+    rows = db.query(Materiel.reference).filter(Materiel.reference.like(f"{prefix}-%")).all()
+    used = set()
+    for (r,) in rows:
+        if r:
+            parts = r.rsplit("-", 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                used.add(int(parts[1]))
+    n = 1
+    while n in used:
+        n += 1
+    return {"reference": f"{prefix}-{n:04d}"}
 
 
 @router.get("/export-excel")
@@ -489,7 +524,8 @@ def _import_materiels_xlsx(content: bytes, db: Session):
     db.query(Materiel).delete()
     db.flush()
 
-    created, errors = 0, []
+    # ── Passe 1 : collecter les lignes ──────────────────────────────────────
+    pending, errors = [], []
     for i, row in enumerate(ws.iter_rows(min_row=header_row_idx + 1, values_only=True), start=header_row_idx + 1):
         if all(v is None for v in row):
             continue
@@ -516,7 +552,7 @@ def _import_materiels_xlsx(content: bytes, db: Session):
 
         adresse_mac    = col(row, "REFCARTERESEAU")
         numero_bon_cmd = col(row, "PO")
-        reference      = col(row, "REFERENCE", "REF")
+        reference_raw  = col(row, "REFERENCE", "REF")
         projet         = col(row, "PROJET")
         matricule      = col(row, "MATRICULE")
         nom            = col(row, "NOM")
@@ -537,22 +573,46 @@ def _import_materiels_xlsx(content: bytes, db: Session):
         statut_raw = col(row, "STATUT")
         statut_val = STATUT_MAP.get(norm(statut_raw), "DISPONIBLE") if statut_raw else "DISPONIBLE"
 
-        db.add(Materiel(
-            type_materiel          = TypeMateriel(type_val),
-            marque                 = str(marque)[:100],
-            modele                 = str(modele)[:150] or None,
-            numero_serie           = numero_serie,
-            adresse_mac            = str(adresse_mac)[:50] if adresse_mac else None,
-            reference              = str(reference)[:100] if reference else None,
-            numero_bon_cmd         = str(numero_bon_cmd)[:100] if numero_bon_cmd else None,
-            projet                 = str(projet)[:100] if projet else None,
-            beneficiaire_matricule = str(matricule)[:50] if matricule else None,
-            beneficiaire_nom       = str(nom)[:100] if nom else None,
-            beneficiaire_prenom    = str(prenom)[:100] if prenom else None,
-            etat                   = EtatMateriel.BON,
-            statut                 = StatutMateriel(statut_val),
-            date_acquisition       = date_acquisition,
-        ))
+        pending.append({
+            "type_materiel":          TypeMateriel(type_val),
+            "marque":                 str(marque)[:100],
+            "modele":                 str(modele)[:150] or None,
+            "numero_serie":           numero_serie,
+            "adresse_mac":            str(adresse_mac)[:50] if adresse_mac else None,
+            "reference_raw":          str(reference_raw)[:100] if reference_raw else None,
+            "numero_bon_cmd":         str(numero_bon_cmd)[:100] if numero_bon_cmd else None,
+            "projet":                 str(projet)[:100] if projet else None,
+            "beneficiaire_matricule": str(matricule)[:50] if matricule else None,
+            "beneficiaire_nom":       str(nom)[:100] if nom else None,
+            "beneficiaire_prenom":    str(prenom)[:100] if prenom else None,
+            "etat":                   EtatMateriel.BON,
+            "statut":                 StatutMateriel(statut_val),
+            "date_acquisition":       date_acquisition,
+        })
+
+    # ── Passe 2 : attribuer des références uniques ──────────────────────────
+    # Si deux lignes ont la même référence (ou aucune), on génère PREFIX-NNNN
+    seen_refs: set[str] = set()
+    type_seq:  dict[str, int] = {}  # prefix → dernier compteur utilisé
+
+    created = 0
+    for p in pending:
+        raw = p.pop("reference_raw")
+        type_val_str = p["type_materiel"].value
+        prefix = REF_PREFIXES.get(type_val_str, "AUT")
+
+        if raw and raw not in seen_refs:
+            ref = raw
+        else:
+            n = type_seq.get(prefix, 0) + 1
+            while f"{prefix}-{n:04d}" in seen_refs:
+                n += 1
+            type_seq[prefix] = n
+            ref = f"{prefix}-{n:04d}"
+
+        seen_refs.add(ref)
+        p["reference"] = ref
+        db.add(Materiel(**p))
         created += 1
 
     db.commit()
