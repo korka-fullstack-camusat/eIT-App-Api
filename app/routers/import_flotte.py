@@ -93,8 +93,18 @@ def _find_header_row(rows: list, keywords: list[str], max_scan: int = 4) -> int:
     return 0
 
 
+def _renewal_date(d: Optional[date]) -> Optional[date]:
+    """Retourne la même date (jour/mois) avec l'année courante."""
+    if d is None:
+        return None
+    import calendar
+    today = date.today()
+    day = min(d.day, calendar.monthrange(today.year, d.month)[1])
+    return date(today.year, d.month, day)
+
+
 def _end_date(d: Optional[date], months: Optional[int]) -> Optional[date]:
-    """Calcule la date de fin d'engagement."""
+    """Calcule la date de fin d'engagement à partir de d."""
     if d is None or months is None:
         return None
     if _HAS_DATEUTIL:
@@ -425,18 +435,20 @@ def get_alertes(
     alertes   = []
 
     def _make_alerte(categorie: str, numero: str, d_act: Optional[date], eng: Optional[int], extra: dict) -> Optional[dict]:
-        fin = _end_date(d_act, eng)
+        d_renew = _renewal_date(d_act)
+        fin = _end_date(d_renew, eng)
         if fin is None:
             return None
         if fin > seuil:
             return None
         return {
-            "categorie":      categorie,
-            "numero":         numero,
-            "date_activation": d_act.isoformat() if d_act else None,
-            "engagement":     eng,
-            "date_fin":       fin.isoformat(),
-            "expire":         fin < today,
+            "categorie":           categorie,
+            "numero":              numero,
+            "date_activation":     d_act.isoformat() if d_act else None,
+            "date_renouvellement": d_renew.isoformat() if d_renew else None,
+            "engagement":          eng,
+            "date_fin":            fin.isoformat(),
+            "expire":              fin < today,
             **extra,
         }
 
@@ -489,7 +501,8 @@ def get_stats(
         (FlotteRmsOrange, "numero",        "date_activation", "engagement"),
     ]:
         for row in db.query(table).all():
-            fin = _end_date(getattr(row, act_field), getattr(row, eng_field))
+            d_renew = _renewal_date(getattr(row, act_field))
+            fin = _end_date(d_renew, getattr(row, eng_field))
             if fin and fin <= seuil:
                 nb_alertes += 1
 
