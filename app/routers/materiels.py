@@ -506,6 +506,7 @@ def _import_materiels_xlsx(content: bytes, db: Session):
 
         adresse_mac    = col(row, "REFCARTERESEAU")
         numero_bon_cmd = col(row, "PO")
+        reference      = col(row, "REFERENCE", "REF")
         projet         = col(row, "PROJET")
         matricule      = col(row, "MATRICULE")
         nom            = col(row, "NOM")
@@ -532,6 +533,7 @@ def _import_materiels_xlsx(content: bytes, db: Session):
             modele                 = str(modele)[:150] or None,
             numero_serie           = numero_serie,
             adresse_mac            = str(adresse_mac)[:50] if adresse_mac else None,
+            reference              = str(reference)[:100] if reference else None,
             numero_bon_cmd         = str(numero_bon_cmd)[:100] if numero_bon_cmd else None,
             projet                 = str(projet)[:100] if projet else None,
             beneficiaire_matricule = str(matricule)[:50] if matricule else None,
