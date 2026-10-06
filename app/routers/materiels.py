@@ -14,21 +14,21 @@ from ..services.auth_service import require_editor
 router = APIRouter(prefix="/api/materiels", tags=["Matériels"])
 
 REF_PREFIXES: dict[str, str] = {
-    "ORDINATEUR_PORTABLE": "PCP",
-    "ORDINATEUR_FIXE":     "PCF",
-    "ECRAN":               "ECR",
-    "SOURIS":              "SOU",
-    "CLAVIER":             "CLA",
+    "ORDINATEUR_PORTABLE": "LTP",   # Laptop
+    "ORDINATEUR_FIXE":     "DTP",   # Desktop
+    "ECRAN":               "EC",
+    "SOURIS":              "SO",
+    "CLAVIER":             "CL",
     "TELEPHONE":           "TEL",
     "TABLETTE":            "TAB",
     "IMPRIMANTE":          "IMP",
-    "SWITCH":              "SWI",
+    "SWITCH":              "SW",
     "ROUTEUR":             "ROU",
     "ONDULEUR":            "OND",
-    "AP":                  "APO",
+    "AP":                  "AP",
     "SERVEUR":             "SRV",
-    "PARE_FEU":            "PFW",
-    "AUTRE":               "AUT",
+    "PARE_FEU":            "PF",
+    "AUTRE":               "AUT",   # Casque, Pointeuse, Badgeuse…
 }
 
 
