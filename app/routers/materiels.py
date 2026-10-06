@@ -511,7 +511,7 @@ def _import_materiels_xlsx(content: bytes, db: Session):
         else:
             marque, modele = TYPE_LABELS_FALLBACK.get(type_val, "Matériel"), ""
 
-        numero_serie = col(row, "NSERIE", "NDESERIE")
+        numero_serie = col(row, "NSERIE", "NDESERIE", "NUMEROSERIE", "NUMERODEDESERIE", "NUMSERIE", "SN", "SERIALNUMBER")
         numero_serie = str(numero_serie).strip() if numero_serie else None
 
         adresse_mac    = col(row, "REFCARTERESEAU")
